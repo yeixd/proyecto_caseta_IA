@@ -10,10 +10,12 @@ from typing import List
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Cargar .env desde la raíz del repositorio (y/o el directorio actual)
-_ROOT_ENV = Path(__file__).resolve().parents[3] / ".env"
-if _ROOT_ENV.is_file():
-    load_dotenv(_ROOT_ENV, override=True)
+# Cargar .env buscando hacia arriba de forma segura (funciona tanto en local como en Docker /app/app)
+for _parent in Path(__file__).resolve().parents:
+    _candidate_env = _parent / ".env"
+    if _candidate_env.is_file():
+        load_dotenv(_candidate_env, override=True)
+        break
 else:
     load_dotenv(override=True)
 
