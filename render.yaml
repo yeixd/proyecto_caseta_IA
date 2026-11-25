@@ -1,0 +1,41 @@
+# Blueprint para desplegar GRATIS con subdominio HTTPS automático en Render.com
+# Subir el repo a GitHub -> Render Dashboard -> New -> Blueprint -> seleccionar este repo.
+
+databases:
+  - name: peaje-ia-db
+    plan: free
+    databaseName: peaje_db
+    user: peaje_user
+
+services:
+  - type: web
+    name: peaje-ia-web
+    runtime: docker
+    dockerfilePath: ./Dockerfile.cloud
+    plan: free
+    healthCheckPath: /docs
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: peaje-ia-db
+          property: connectionString
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: HARDWARE_API_KEY
+        generateValue: true
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: VITE_GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_ANDROID_CLIENT_ID
+        sync: false
+      - key: EXTRA_ADMIN_EMAILS
+        sync: false
+      - key: INFERENCE_URL
+        sync: false
+      - key: INFERENCE_API_KEY
+        sync: false
+      - key: OLLAMA_URL
+        sync: false
+      - key: OLLAMA_MODEL
+        value: llama3.1:8b

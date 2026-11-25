@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "Peaje IA Caseta",
+    "slug": "peaje-ia-caseta",
+    "scheme": "peajeia",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "android": {
+      "package": "bo.edu.unifranz.peajeia",
+      "permissions": ["CAMERA", "INTERNET"]
+    },
+    "ios": {
+      "bundleIdentifier": "bo.edu.unifranz.peajeia",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Se requiere acceso a la cámara para capturar vehículos en Modo Caseta y consultar placas por foto."
+      }
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Permite capturar video y fotografías de vehículos y placas."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Permite seleccionar fotografías de placas para consultar al agente."
+        }
+      ],
+      "expo-secure-store"
+    ]
+  }
+}

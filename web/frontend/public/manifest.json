@@ -1,0 +1,19 @@
+{
+  "name": "Peaje IA — App Móvil Caseta",
+  "short_name": "Peaje IA",
+  "description": "App móvil de control de peaje: Modo Caseta con cámara en tiempo real y Modo Consulta con Agente IA.",
+  "start_url": "/movil",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#020617",
+  "theme_color": "#0ea5e9",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

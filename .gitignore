@@ -1,0 +1,67 @@
+# ==============================================================================
+# PROHIBIDO subir secretos, credenciales, .env o pesos grandes al repositorio
+# ==============================================================================
+
+# Variables de entorno y secretos
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*secret*
+*credentials*.json
+google-services.json
+GoogleService-Info.plist
+service-account*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+.conda/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Node / Frontend / Mobile
+node_modules/
+dist/
+build/
+.expo/
+.expo-shared/
+web-build/
+*.jks
+*.p8
+*.p12
+*.mobileprovision
+*.apk
+*.aab
+
+# Base de datos local y archivos temporales
+*.db
+*.sqlite
+*.sqlite3
+uploads/
+evidencias/
+logs/
+*.log
+
+# Pesos de modelos ML (subir a RunPod Volume / HuggingFace / Drive, no a Git)
+*.pt
+*.pth
+*.onnx
+*.engine
+*.weights
+runs/
+datasets/
+
+# OS / IDEs
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,189 @@
+{
+  "info": {
+    "name": "Peaje IA — API REST v1 (UNIFRANZ IAM-811)",
+    "description": "Colección completa de endpoints obligatorios y administrativos del Sistema Inteligente de Control de Peaje.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "https://peaje.tudominio.com" },
+    { "key": "jwt_token", "value": "PEGAR_TOKEN_DE_AUTH_GOOGLE" },
+    { "key": "google_id_token", "value": "PEGAR_GOOGLE_ID_TOKEN" }
+  ],
+  "item": [
+    {
+      "name": "1. Autenticación",
+      "item": [
+        {
+          "name": "POST /api/v1/auth/google",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id_token\": \"{{google_id_token}}\"\n}"
+            },
+            "url": "{{base_url}}/api/v1/auth/google"
+          }
+        },
+        {
+          "name": "GET /api/v1/auth/me",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }],
+            "url": "{{base_url}}/api/v1/auth/me"
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Pasos y Caseta",
+      "item": [
+        {
+          "name": "POST /api/v1/pasos/frame",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "caseta_id", "value": "1", "type": "text" },
+                { "key": "file", "type": "file", "src": "" }
+              ]
+            },
+            "url": "{{base_url}}/api/v1/pasos/frame"
+          }
+        },
+        {
+          "name": "GET /api/v1/pasos",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }],
+            "url": "{{base_url}}/api/v1/pasos?limit=50"
+          }
+        },
+        {
+          "name": "GET /api/v1/casetas/{id}/resumen",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }],
+            "url": "{{base_url}}/api/v1/casetas/1/resumen"
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Placas y Agente Conversacional",
+      "item": [
+        {
+          "name": "POST /api/v1/placas/consultar",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{jwt_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"placa\": \"2481-KLM\"\n}"
+            },
+            "url": "{{base_url}}/api/v1/placas/consultar"
+          }
+        },
+        {
+          "name": "POST /api/v1/placas/consultar-imagen",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }],
+            "body": {
+              "mode": "formdata",
+              "formdata": [{ "key": "file", "type": "file", "src": "" }]
+            },
+            "url": "{{base_url}}/api/v1/placas/consultar-imagen"
+          }
+        },
+        {
+          "name": "GET /api/v1/placas/{placa}/historial",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }],
+            "url": "{{base_url}}/api/v1/placas/2481KLM/historial"
+          }
+        },
+        {
+          "name": "POST /api/v1/agente/chat (Texto o Imagen)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "mensaje", "value": "Consulta la placa 2481-KLM", "type": "text" },
+                { "key": "file", "type": "file", "src": "" }
+              ]
+            },
+            "url": "{{base_url}}/api/v1/agente/chat"
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Administración, Alertas, Estado y Hardware",
+      "item": [
+        {
+          "name": "GET /api/v1/vehiculos",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }],
+            "url": "{{base_url}}/api/v1/vehiculos"
+          }
+        },
+        {
+          "name": "POST /api/v1/vehiculos (Admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{jwt_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"placa\": \"9988-ABC\",\n  \"propietario\": \"Prueba UNIFRANZ\",\n  \"categoria\": \"auto\",\n  \"ejes\": 2,\n  \"saldo\": 100.0,\n  \"activo\": true\n}"
+            },
+            "url": "{{base_url}}/api/v1/vehiculos"
+          }
+        },
+        {
+          "name": "GET /api/v1/alertas",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }],
+            "url": "{{base_url}}/api/v1/alertas"
+          }
+        },
+        {
+          "name": "GET /api/v1/estado",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }],
+            "url": "{{base_url}}/api/v1/estado"
+          }
+        },
+        {
+          "name": "POST /api/v1/hardware/test",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{jwt_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tipo\": \"ALERTA_NO_REGISTRADO\",\n  \"placa\": \"9999XXX\",\n  \"detalle\": \"Prueba de sirena y LED rojo\"\n}"
+            },
+            "url": "{{base_url}}/api/v1/hardware/test"
+          }
+        }
+      ]
+    }
+  ]
+}

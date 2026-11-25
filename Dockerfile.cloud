@@ -1,0 +1,35 @@
+# Dockerfile unificado (Frontend React + Backend FastAPI) para despliegue directo
+# en Render.com, Railway o Fly.io con subdominio HTTPS gratuito automático.
+
+FROM node:20-alpine AS frontend-builder
+WORKDIR /frontend
+COPY web/frontend/package.json ./
+RUN npm install
+
+ARG VITE_GOOGLE_CLIENT_ID=""
+ENV VITE_API_BASE_URL="" \
+    VITE_WS_BASE_URL="" \
+    VITE_GOOGLE_CLIENT_ID=$VITE_GOOGLE_CLIENT_ID
+
+COPY web/frontend/ ./
+RUN npm run build
+
+FROM python:3.11-slim
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    FRONTEND_DIST_DIR=/app/frontend_dist \
+    EVIDENCE_DIR=/app/uploads/evidencias \
+    EVIDENCE_PUBLIC_BASE_URL=/static/evidencias
+
+WORKDIR /app
+COPY web/backend/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+COPY web/backend/diagnostico_entorno.py /app/diagnostico_entorno.py
+COPY web/backend/app /app/app
+COPY --from=frontend-builder /frontend/dist /app/frontend_dist
+
+RUN mkdir -p /app/uploads/evidencias
+
+EXPOSE 8000
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
