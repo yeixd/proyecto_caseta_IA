@@ -5,7 +5,7 @@
 **Fecha:** 25/11/2026  
 **Integrantes:** *(Completar nombres y roles)*  
 **Subdominio en producción:** `https://peaje.tudominio.com`  
-**Repositorio Git:** `https://github.com/TU_USUARIO/proyecto_caseta_IA`
+**Repositorio Git:** `https://github.com/yeixd/proyecto_caseta_IA`
 
 ---
 

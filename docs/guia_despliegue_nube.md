@@ -36,7 +36,7 @@ Esta guía asegura el cumplimiento estricto de la **Sección 5 (Restricción: si
    - `m1_placas.pt`, `m2_vehiculos_seg.pt`, `m3_ruedas_pose.pt`, `m4_pasajeros_seg.pt`.
 4. Clonar el repositorio en el Pod y levantar la inferencia:
    ```bash
-   git clone https://github.com/TU_USUARIO/proyecto_caseta_IA.git /workspace/proyecto_caseta_IA
+   git clone https://github.com/yeixd/proyecto_caseta_IA.git /workspace/proyecto_caseta_IA
    cd /workspace/proyecto_caseta_IA/inferencia
    pip install -r requirements.txt
    python diagnostico_entorno.py > /workspace/diagnostico_runpod.txt
