@@ -1,17 +1,29 @@
 import React, { useEffect, useState } from "react";
-import { Cpu, Database, Radio, RefreshCw, Server, Zap } from "lucide-react";
+import { Cpu, Database, Radio, RefreshCw, Save, Server, Zap } from "lucide-react";
 import { api } from "../api";
+import { useAuth } from "../context/AuthContext";
 
 export default function EstadoPage() {
+  const { isAdmin } = useAuth();
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [savingCfg, setSavingCfg] = useState(false);
+  const [cfgMsg, setCfgMsg] = useState("");
   const [hwMsg, setHwMsg] = useState("");
+
+  const [inferenceUrl, setInferenceUrl] = useState("");
+  const [inferenceApiKey, setInferenceApiKey] = useState("");
+  const [ollamaUrl, setOllamaUrl] = useState("");
+  const [ollamaModel, setOllamaModel] = useState("llama3.1:8b");
 
   async function loadStatus() {
     setLoading(true);
     try {
       const { data } = await api.get("/api/v1/estado");
       setStatus(data);
+      if (data.inference?.url) setInferenceUrl(data.inference.url);
+      if (data.ollama?.url) setOllamaUrl(data.ollama.url);
+      if (data.ollama?.configured_model) setOllamaModel(data.ollama.configured_model);
     } finally {
       setLoading(false);
     }
@@ -20,6 +32,32 @@ export default function EstadoPage() {
   useEffect(() => {
     loadStatus();
   }, []);
+
+  async function saveEndpoints(e) {
+    e.preventDefault();
+    setSavingCfg(true);
+    setCfgMsg("");
+    try {
+      const { data } = await api.put("/api/v1/estado/config", {
+        inference_url: inferenceUrl.trim(),
+        inference_api_key: inferenceApiKey.trim(),
+        ollama_url: ollamaUrl.trim(),
+        ollama_model: ollamaModel.trim() || "llama3.1:8b"
+      });
+      setStatus((prev) =>
+        prev ? { ...prev, inference: data.inference, ollama: data.ollama } : prev
+      );
+      setCfgMsg(
+        data.inference?.online
+          ? `Conectado correctamente a ${data.inference.url} (${data.inference.latency_ms} ms)`
+          : `URL guardada, pero el endpoint aún no responde: ${data.inference?.error || "sin respuesta"}`
+      );
+    } catch (err) {
+      setCfgMsg(err?.response?.data?.detail || "Error guardando configuración.");
+    } finally {
+      setSavingCfg(false);
+    }
+  }
 
   async function testHardware(tipo) {
     setHwMsg("");
@@ -53,6 +91,70 @@ export default function EstadoPage() {
         </button>
       </div>
 
+      {/* Configuración en vivo de INFERENCE_URL y OLLAMA_URL (solo admin) */}
+      {isAdmin && (
+        <form onSubmit={saveEndpoints} className="card p-5 space-y-4 border-sky-500/30">
+          <div>
+            <h3 className="font-semibold text-white flex items-center gap-2">
+              <Server className="w-4 h-4 text-sky-400" />
+              Conectar Endpoint de Inferencia (RunPod o Google Colab) en Vivo
+            </h3>
+            <p className="text-xs text-slate-400 mt-1">
+              Pega aquí la URL HTTPS de RunPod (puerto 8000) o el túnel de Google Colab (
+              <code className="font-mono">https://....trycloudflare.com</code>). Se aplica al
+              instante sin redesplegar Render.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-slate-400">INFERENCE_URL (RunPod o Colab)</label>
+              <input
+                className="input-dark w-full mt-1 font-mono text-xs"
+                placeholder="https://TU-POD-8000.proxy.runpod.net o https://xxxx.trycloudflare.com"
+                value={inferenceUrl}
+                onChange={(e) => setInferenceUrl(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="text-xs text-slate-400">INFERENCE_API_KEY (opcional)</label>
+              <input
+                className="input-dark w-full mt-1 font-mono text-xs"
+                placeholder="Dejar vacío si no configuraste clave en Colab/RunPod"
+                value={inferenceApiKey}
+                onChange={(e) => setInferenceApiKey(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="text-xs text-slate-400">OLLAMA_URL (opcional — RunPod 11434)</label>
+              <input
+                className="input-dark w-full mt-1 font-mono text-xs"
+                placeholder="https://TU-POD-11434.proxy.runpod.net"
+                value={ollamaUrl}
+                onChange={(e) => setOllamaUrl(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="text-xs text-slate-400">Modelo Ollama</label>
+              <input
+                className="input-dark w-full mt-1 font-mono text-xs"
+                placeholder="llama3.1:8b"
+                value={ollamaModel}
+                onChange={(e) => setOllamaModel(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <button type="submit" disabled={savingCfg} className="btn-primary text-xs flex items-center gap-1.5">
+              <Save className="w-4 h-4" />
+              {savingCfg ? "Guardando y probando..." : "Guardar y Verificar Conexión"}
+            </button>
+            {cfgMsg && <span className="text-xs text-sky-300">{cfgMsg}</span>}
+          </div>
+        </form>
+      )}
+
       {status && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           {/* Endpoint de inferencia */}
@@ -70,6 +172,7 @@ export default function EstadoPage() {
             {status.inference?.latency_ms && (
               <p className="text-xs text-emerald-300">
                 Latencia /health: {status.inference.latency_ms} ms
+                {status.inference?.details?.multi_angle_enabled ? " · Multi-ángulo activo" : ""}
               </p>
             )}
             {status.inference?.error && (
@@ -89,9 +192,9 @@ export default function EstadoPage() {
                     <span className={info.loaded ? "text-emerald-400" : "text-amber-400"}>
                       {info.loaded
                         ? info.custom === false
-                          ? "Base (reemplazar peso)"
-                          : "Cargado"
-                        : "Sin peso"}
+                          ? "Base activo"
+                          : "Custom cargado"
+                        : "Fallback OpenCV activo"}
                     </span>
                   </div>
                 ))}

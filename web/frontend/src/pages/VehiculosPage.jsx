@@ -218,8 +218,8 @@ export default function VehiculosPage({ onRefreshGlobal }) {
                   <label className="text-xs text-slate-400">Ejes</label>
                   <input
                     type="number"
-                    min="2"
-                    max="10"
+                    min="1"
+                    max="12"
                     className="input-dark w-full mt-1"
                     value={formV.ejes}
                     onChange={(e) => setFormV({ ...formV, ejes: e.target.value })}
@@ -362,8 +362,8 @@ export default function VehiculosPage({ onRefreshGlobal }) {
                 <label className="text-xs text-slate-400">Ejes</label>
                 <input
                   type="number"
-                  min="2"
-                  max="10"
+                  min="1"
+                  max="12"
                   className="input-dark block mt-1 w-24"
                   value={formT.ejes}
                   onChange={(e) => setFormT({ ...formT, ejes: e.target.value })}

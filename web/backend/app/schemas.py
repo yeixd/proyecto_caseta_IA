@@ -52,7 +52,7 @@ class VehiculoCreate(BaseModel):
     placa: str = Field(..., examples=["2481-KLM"])
     propietario: str = Field(..., examples=["Carlos Mendoza"])
     categoria: str = Field(..., pattern="^(moto|auto|minibus|camion|bus)$")
-    ejes: int = Field(default=2, ge=2, le=10)
+    ejes: int = Field(default=2, ge=1, le=12)
     saldo: float = Field(default=0.0, ge=0.0)
     activo: bool = True
 
@@ -60,7 +60,7 @@ class VehiculoCreate(BaseModel):
 class VehiculoUpdate(BaseModel):
     propietario: Optional[str] = None
     categoria: Optional[str] = Field(default=None, pattern="^(moto|auto|minibus|camion|bus)$")
-    ejes: Optional[int] = Field(default=None, ge=2, le=10)
+    ejes: Optional[int] = Field(default=None, ge=1, le=12)
     saldo: Optional[float] = Field(default=None, ge=0.0)
     activo: Optional[bool] = None
 
@@ -92,8 +92,15 @@ class CasetaOut(BaseModel):
 
 class TarifaCreate(BaseModel):
     categoria: str = Field(..., pattern="^(moto|auto|minibus|camion|bus)$")
-    ejes: int = Field(..., ge=2, le=10)
+    ejes: int = Field(..., ge=1, le=12)
     monto: float = Field(..., ge=0.0)
+
+
+class RuntimeEndpointsUpdate(BaseModel):
+    inference_url: Optional[str] = Field(default=None, description="URL pública de RunPod o Colab")
+    inference_api_key: Optional[str] = Field(default=None)
+    ollama_url: Optional[str] = Field(default=None, description="URL pública de Ollama en RunPod")
+    ollama_model: Optional[str] = Field(default=None)
 
 
 class TarifaOut(BaseModel):

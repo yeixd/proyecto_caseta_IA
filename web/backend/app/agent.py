@@ -32,6 +32,29 @@ from app.plate_utils import extract_plate_candidate_from_text, lookup_plate_stat
 
 logger = logging.getLogger("peaje.agent")
 
+_runtime_ollama_url: Optional[str] = None
+_runtime_ollama_model: Optional[str] = None
+
+
+def set_ollama_runtime_config(url: Optional[str] = None, model: Optional[str] = None) -> None:
+    global _runtime_ollama_url, _runtime_ollama_model
+    if url is not None:
+        _runtime_ollama_url = url.strip().rstrip("/")
+    if model is not None and model.strip():
+        _runtime_ollama_model = model.strip()
+
+
+def get_active_ollama_url() -> str:
+    if _runtime_ollama_url is not None:
+        return _runtime_ollama_url
+    return get_settings().ollama_url.strip().rstrip("/")
+
+
+def get_active_ollama_model() -> str:
+    if _runtime_ollama_model:
+        return _runtime_ollama_model
+    return get_settings().ollama_model
+
 SYSTEM_PROMPT = """Eres el Agente Conversacional oficial del Sistema Inteligente de Control de Peaje.
 REGLAS ESTRICTAS:
 1. Responde ÚNICAMENTE con los datos exactos entregados en el bloque JSON [DATOS_VERIFICADOS_BD].
@@ -118,11 +141,13 @@ async def _try_ollama_response(
     verificado de la BD. Si Ollama no está disponible, retorna None para usar el fallback determinista.
     """
     settings = get_settings()
-    if not settings.ollama_url:
+    ollama_url = get_active_ollama_url()
+    ollama_model = get_active_ollama_model()
+    if not ollama_url:
         return None
 
     payload = {
-        "model": settings.ollama_model,
+        "model": ollama_model,
         "stream": False,
         "options": {"temperature": 0.1},
         "messages": [
@@ -140,39 +165,42 @@ async def _try_ollama_response(
 
     try:
         async with httpx.AsyncClient(timeout=settings.ollama_timeout_seconds) as client:
-            resp = await client.post(f"{settings.ollama_url}/api/chat", json=payload)
+            resp = await client.post(f"{ollama_url}/api/chat", json=payload)
         if resp.status_code == 200:
             body = resp.json()
             content = body.get("message", {}).get("content", "").strip()
             if content:
                 return content
     except Exception as exc:
-        logger.warning("Ollama no disponible en %s (%s); usando motor determinista.", settings.ollama_url, exc)
+        logger.warning("Ollama no disponible en %s (%s); usando motor determinista.", ollama_url, exc)
     return None
 
 
 async def check_ollama_health() -> Dict[str, Any]:
-    settings = get_settings()
-    if not settings.ollama_url:
+    ollama_url = get_active_ollama_url()
+    ollama_model = get_active_ollama_model()
+    if not ollama_url:
         return {
             "online": False,
+            "url": "",
+            "configured_model": ollama_model,
             "mode": "determinista_sin_alucinaciones",
             "detail": "OLLAMA_URL no configurado; usando motor determinista sobre BD.",
         }
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{settings.ollama_url}/api/tags")
+            resp = await client.get(f"{ollama_url}/api/tags")
         if resp.status_code == 200:
             models = [m.get("name") for m in resp.json().get("models", [])]
             return {
                 "online": True,
-                "url": settings.ollama_url,
-                "configured_model": settings.ollama_model,
+                "url": ollama_url,
+                "configured_model": ollama_model,
                 "available_models": models,
             }
-        return {"online": False, "url": settings.ollama_url, "status_code": resp.status_code}
+        return {"online": False, "url": ollama_url, "configured_model": ollama_model, "status_code": resp.status_code}
     except Exception as exc:
-        return {"online": False, "url": settings.ollama_url, "error": str(exc)}
+        return {"online": False, "url": ollama_url, "configured_model": ollama_model, "error": str(exc)}
 
 
 async def run_conversational_agent(

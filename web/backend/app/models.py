@@ -113,3 +113,13 @@ class Alerta(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow, index=True)
 
     paso = relationship("Paso", back_populates="alertas")
+
+
+class Configuracion(Base):
+    """Configuración dinámica en BD (permite actualizar INFERENCE_URL / OLLAMA_URL sin redesplegar)."""
+
+    __tablename__ = "configuracion"
+
+    clave = Column(String(80), primary_key=True, index=True)
+    valor = Column(String(500), nullable=False, default="")
+

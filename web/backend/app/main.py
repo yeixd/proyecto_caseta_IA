@@ -43,7 +43,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.agent import check_ollama_health, run_conversational_agent
+from app.agent import check_ollama_health, run_conversational_agent, set_ollama_runtime_config
 from app.auth import (
     authenticate_google_user,
     create_access_token,
@@ -54,7 +54,7 @@ from app.auth import (
 from app.config import get_settings
 from app.database import Base, SessionLocal, engine, get_db
 from app.inference_client import inference_client
-from app.models import Alerta, Caseta, Paso, Tarifa, Usuario, Vehiculo
+from app.models import Alerta, Caseta, Configuracion, Paso, Tarifa, Usuario, Vehiculo
 from app.plate_utils import lookup_plate_status, normalize_plate
 from app.realtime import realtime_manager
 from app.schemas import (
@@ -67,6 +67,7 @@ from app.schemas import (
     HardwareTestRequest,
     PasoOut,
     PlacaConsultarRequest,
+    RuntimeEndpointsUpdate,
     TarifaCreate,
     TarifaOut,
     UserCreate,
@@ -121,6 +122,18 @@ def on_startup():
     db = SessionLocal()
     try:
         seed_database(db)
+        # Cargar configuración dinámica persistida (INFERENCE_URL / OLLAMA_URL)
+        cfg = {row.clave: row.valor for row in db.query(Configuracion).all()}
+        if "inference_url" in cfg or "inference_api_key" in cfg:
+            inference_client.set_runtime_config(
+                url=cfg.get("inference_url"),
+                api_key=cfg.get("inference_api_key"),
+            )
+        if "ollama_url" in cfg or "ollama_model" in cfg:
+            set_ollama_runtime_config(
+                url=cfg.get("ollama_url"),
+                model=cfg.get("ollama_model"),
+            )
         logger.info("Base de datos inicializada y seed aplicado.")
     finally:
         db.close()
@@ -282,7 +295,7 @@ async def registrar_paso_frame(
     placa_norm = normalize_plate(str(placa_obj.get("texto") or placa_leida))
     confianza_ocr = float(placa_obj.get("confianza") or 0.0)
     categoria = str(vehiculo_obj.get("categoria") or "auto").lower()
-    ejes = max(2, int(infer_data.get("ejes") or 2))
+    ejes = max(1, int(infer_data.get("ejes") or 1))
     pasajeros = max(0, int(infer_data.get("pasajeros") or 0))
     annotated_b64 = str(infer_data.get("imagen_anotada_b64") or "")
 
@@ -839,6 +852,50 @@ async def estado_sistema(
             "hardware_conectados": len(realtime_manager.hardware_clients),
             "ultimo_evento_hardware": realtime_manager.last_hardware_event,
         },
+    }
+
+
+@app.put("/api/v1/estado/config", tags=["Estado del Sistema"])
+async def actualizar_endpoints_runtime(
+    payload: RuntimeEndpointsUpdate,
+    _admin: Usuario = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Permite a un administrador cambiar INFERENCE_URL (RunPod <-> Colab) y OLLAMA_URL en vivo
+    sin necesidad de redesplegar el servidor web.
+    """
+    updates = {}
+    if payload.inference_url is not None:
+        updates["inference_url"] = payload.inference_url.strip().rstrip("/")
+    if payload.inference_api_key is not None:
+        updates["inference_api_key"] = payload.inference_api_key.strip()
+    if payload.ollama_url is not None:
+        updates["ollama_url"] = payload.ollama_url.strip().rstrip("/")
+    if payload.ollama_model is not None and payload.ollama_model.strip():
+        updates["ollama_model"] = payload.ollama_model.strip()
+
+    for clave, valor in updates.items():
+        row = db.query(Configuracion).filter(Configuracion.clave == clave).first()
+        if row:
+            row.valor = valor
+        else:
+            db.add(Configuracion(clave=clave, valor=valor))
+    db.commit()
+
+    inference_client.set_runtime_config(
+        url=updates.get("inference_url"),
+        api_key=updates.get("inference_api_key"),
+    )
+    set_ollama_runtime_config(
+        url=updates.get("ollama_url"),
+        model=updates.get("ollama_model"),
+    )
+
+    return {
+        "ok": True,
+        "inference": await inference_client.check_health(),
+        "ollama": await check_ollama_health(),
     }
 
 

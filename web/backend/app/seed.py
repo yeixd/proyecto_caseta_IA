@@ -19,11 +19,14 @@ DEFAULT_CASETAS = [
 ]
 
 DEFAULT_TARIFAS = [
+    ("moto", 1, 1.5),
     ("moto", 2, 2.0),
+    ("auto", 1, 3.0),
     ("auto", 2, 5.0),
     ("minibus", 2, 8.0),
     ("bus", 2, 15.0),
     ("bus", 3, 22.0),
+    ("camion", 1, 12.0),
     ("camion", 2, 18.0),
     ("camion", 3, 28.0),
     ("camion", 4, 38.0),
