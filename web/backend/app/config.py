@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import List
 
 from dotenv import load_dotenv
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Cargar .env desde la raíz del repositorio (y/o el directorio actual)
 _ROOT_ENV = Path(__file__).resolve().parents[3] / ".env"
@@ -19,6 +19,7 @@ else:
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(extra="ignore")
     app_env: str = os.getenv("APP_ENV", "production")
     app_url: str = os.getenv("APP_URL", "https://peaje.tudominio.com")
     frontend_url: str = os.getenv("FRONTEND_URL", "https://peaje.tudominio.com")

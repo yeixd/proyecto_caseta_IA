@@ -201,6 +201,14 @@ def _serialize_alerta(alerta: Alerta) -> Dict[str, Any]:
 
 
 # ----------------------------------------------------------------------
+# 0. HEALTHCHECK PÚBLICO (para Render / Docker / monitoreo)
+# ----------------------------------------------------------------------
+@app.get("/health", tags=["Estado del Sistema"])
+def public_health():
+    return {"status": "ok"}
+
+
+# ----------------------------------------------------------------------
 # 1. AUTENTICACIÓN GOOGLE OAUTH 2.0 (única ruta pública de /api/v1)
 # ----------------------------------------------------------------------
 @app.get("/api/v1/auth/config", tags=["Autenticación"])
@@ -913,7 +921,7 @@ if os.path.isdir(_frontend_dist) and os.path.isfile(os.path.join(_frontend_dist,
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_spa(full_path: str):
-        if full_path.startswith(("api/", "ws/", "static/", "docs", "redoc", "openapi.json")):
+        if full_path.startswith(("api/", "ws/", "static/", "docs", "redoc", "openapi.json", "health")):
             raise HTTPException(status_code=404, detail="Ruta no encontrada")
         candidate = os.path.join(_frontend_dist, full_path)
         if full_path and os.path.isfile(candidate):

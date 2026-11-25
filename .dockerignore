@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+movil/.env
+node_modules
+web/frontend/node_modules
+web/frontend/dist
+movil/node_modules
+__pycache__
+*.pyc
+*.db
+*.sqlite
+*.pt
+uploads
