@@ -166,6 +166,15 @@ async def _try_ollama_response(
     try:
         async with httpx.AsyncClient(timeout=settings.ollama_timeout_seconds) as client:
             resp = await client.post(f"{ollama_url}/api/chat", json=payload)
+            # Si el modelo configurado no existe en Ollama, usar automáticamente el primero disponible
+            if resp.status_code == 404:
+                tags = await client.get(f"{ollama_url}/api/tags")
+                if tags.status_code == 200:
+                    models = [m.get("name") for m in tags.json().get("models", []) if m.get("name")]
+                    if models:
+                        payload["model"] = models[0]
+                        set_ollama_runtime_config(model=models[0])
+                        resp = await client.post(f"{ollama_url}/api/chat", json=payload)
         if resp.status_code == 200:
             body = resp.json()
             content = body.get("message", {}).get("content", "").strip()
