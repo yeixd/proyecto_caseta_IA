@@ -61,27 +61,30 @@ DEFAULT_VEHICULOS = [
 ]
 
 
-def _ensure_user(db: Session, email: str, nombre: str, rol: str):
+def _ensure_user(db: Session, email: str, nombre: str, rol: str, seen_emails: set):
     settings = get_settings()
     email_clean = email.strip().lower()
-    if not email_clean:
+    if not email_clean or email_clean in seen_emails:
         return
     if settings.allowed_email_domain and not email_clean.endswith(f"@{settings.allowed_email_domain}"):
         return
+    seen_emails.add(email_clean)
     existing = db.query(Usuario).filter(Usuario.email_google == email_clean).first()
     if not existing:
         db.add(
             Usuario(
                 email_google=email_clean,
-                nombre=nombre,
+                nombre=nombre.strip(),
                 rol=rol,
                 activo=True,
             )
         )
+        db.flush()
 
 
 def seed_database(db: Session) -> None:
     settings = get_settings()
+    seen_emails: set = set()
 
     # 1. Docente administrador obligatorio (Sección 4.4)
     _ensure_user(
@@ -89,17 +92,20 @@ def seed_database(db: Session) -> None:
         email=DOCENTE_EMAIL,
         nombre="Doc. Álvaro Pinto (Docente UNIFRANZ)",
         rol="administrador",
+        seen_emails=seen_emails,
     )
 
-    # Administradores adicionales desde .env
+    # Administradores adicionales desde .env (ignora duplicados del docente o repetidos)
     for raw_email in settings.extra_admin_emails.split(","):
-        if raw_email.strip():
-            _ensure_user(db, raw_email, raw_email.split("@")[0].title(), "administrador")
+        clean = raw_email.strip()
+        if clean:
+            _ensure_user(db, clean, clean.split("@")[0].title(), "administrador", seen_emails)
 
     # Operadores adicionales desde .env
     for raw_email in settings.extra_operator_emails.split(","):
-        if raw_email.strip():
-            _ensure_user(db, raw_email, raw_email.split("@")[0].title(), "operador")
+        clean = raw_email.strip()
+        if clean:
+            _ensure_user(db, clean, clean.split("@")[0].title(), "operador", seen_emails)
 
     # 2. Casetas
     for nombre, ubicacion in DEFAULT_CASETAS:
