@@ -110,8 +110,7 @@ export default function App() {
                 ...prev,
                 pasos_hoy: (prev.pasos_hoy || 0) + 1,
                 recaudacion_hoy:
-                  (prev.recaudacion_hoy || 0) +
-                  (msg.data.estado === "APROBADO" ? Number(msg.data.monto || 0) : 0),
+                  (prev.recaudacion_hoy || 0) + Number(msg.data.monto || 0),
                 pasajeros_hoy: (prev.pasajeros_hoy || 0) + Number(msg.data.pasajeros || 0),
                 alertas_pendientes: (prev.alertas_pendientes || 0) + (msg.alerta ? 1 : 0)
               };

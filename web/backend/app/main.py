@@ -317,7 +317,8 @@ async def registrar_paso_frame(
 
     if not placa_norm or len(placa_norm) < 4:
         estado_paso = "PLACA_ILEGIBLE"
-        monto_cobrado = 0.0
+        # Mantener la tarifa calculada por categoría + ejes para que el cobro/precio no quede en 0
+        monto_cobrado = tarifa_monto
         hw_signal = "ALERTA_NO_REGISTRADO"
         hw_level = "warning"
         vehiculo_db = None
@@ -325,19 +326,22 @@ async def registrar_paso_frame(
         vehiculo_db = db.query(Vehiculo).filter(Vehiculo.placa == placa_norm).first()
         if not vehiculo_db:
             estado_paso = "NO_REGISTRADO"
+            monto_cobrado = tarifa_monto
             hw_signal = "ALERTA_NO_REGISTRADO"
             hw_level = "danger"
         elif not vehiculo_db.activo:
             estado_paso = "VEHICULO_INACTIVO"
-            monto_cobrado = 0.0
+            monto_cobrado = tarifa_monto
             hw_signal = "ALERTA_INACTIVO"
             hw_level = "danger"
         elif vehiculo_db.saldo < tarifa_monto:
             estado_paso = "SIN_SALDO"
+            monto_cobrado = tarifa_monto
             hw_signal = "SIN_SALDO"
             hw_level = "warning"
         else:
             estado_paso = "APROBADO"
+            monto_cobrado = tarifa_monto
             vehiculo_db.saldo = round(vehiculo_db.saldo - tarifa_monto, 2)
             hw_signal = "APROBADO"
             hw_level = "success"
@@ -521,7 +525,8 @@ def resumen_caseta(
     )
 
     total_pasos = len(pasos_hoy)
-    recaudacion = round(sum(p.monto for p in pasos_hoy if p.estado == "APROBADO"), 2)
+    recaudacion = round(sum(p.monto for p in pasos_hoy), 2)
+    recaudacion_aprobada = round(sum(p.monto for p in pasos_hoy if p.estado == "APROBADO"), 2)
     pasajeros_total = sum(p.pasajeros for p in pasos_hoy)
     por_categoria: Dict[str, int] = {}
     for p in pasos_hoy:
@@ -539,6 +544,7 @@ def resumen_caseta(
         "fecha_utc": start_of_day.date().isoformat(),
         "total_pasos": total_pasos,
         "recaudacion_bs": recaudacion,
+        "recaudacion_aprobada_bs": recaudacion_aprobada,
         "pasajeros_total": pasajeros_total,
         "alertas_hoy": alertas_hoy,
         "desglose_categorias": por_categoria,
@@ -558,7 +564,8 @@ def resumen_global(
 
     return {
         "pasos_hoy": len(pasos_hoy),
-        "recaudacion_hoy": round(sum(p.monto for p in pasos_hoy if p.estado == "APROBADO"), 2),
+        "recaudacion_hoy": round(sum(p.monto for p in pasos_hoy), 2),
+        "recaudacion_aprobada_hoy": round(sum(p.monto for p in pasos_hoy if p.estado == "APROBADO"), 2),
         "pasajeros_hoy": sum(p.pasajeros for p in pasos_hoy),
         "alertas_pendientes": alertas_pendientes,
         "total_vehiculos": total_vehiculos,

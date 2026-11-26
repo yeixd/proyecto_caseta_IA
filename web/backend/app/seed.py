@@ -19,14 +19,15 @@ DEFAULT_CASETAS = [
 ]
 
 DEFAULT_TARIFAS = [
-    ("moto", 1, 1.5),
+    ("moto", 1, 2.0),
     ("moto", 2, 2.0),
-    ("auto", 1, 3.0),
+    ("auto", 1, 5.0),
     ("auto", 2, 5.0),
+    ("minibus", 1, 8.0),
     ("minibus", 2, 8.0),
     ("bus", 2, 15.0),
     ("bus", 3, 22.0),
-    ("camion", 1, 12.0),
+    ("camion", 1, 15.0),
     ("camion", 2, 18.0),
     ("camion", 3, 28.0),
     ("camion", 4, 38.0),
@@ -34,33 +35,33 @@ DEFAULT_TARIFAS = [
     ("camion", 6, 60.0),
 ]
 
-# 25 vehículos de prueba (supera el mínimo obligatorio de 20 vehículos)
+# 25 vehículos de prueba (particulares, minibuses y motos con 1 eje; camiones y buses con 2+ ejes)
 DEFAULT_VEHICULOS = [
-    ("2481KLM", "Carlos Mendoza Quispe", "auto", 2, 150.0, True),
-    ("3092XTR", "María Elena Vargas", "auto", 2, 85.5, True),
+    ("2481KLM", "Carlos Mendoza Quispe", "auto", 1, 150.0, True),
+    ("3092XTR", "María Elena Vargas", "auto", 1, 85.5, True),
     ("4510BGD", "Transportes Andino S.R.L.", "camion", 3, 420.0, True),
-    ("5821LPZ", "Cooperativa 16 de Julio", "minibus", 2, 64.0, True),
+    ("5821LPZ", "Cooperativa 16 de Julio", "minibus", 1, 64.0, True),
     ("6190CBX", "Flota Bolívar S.A.", "bus", 3, 500.0, True),
-    ("1204MTO", "Diego Rojas Flores", "moto", 2, 30.0, True),
+    ("1204MTO", "Diego Rojas Flores", "moto", 1, 30.0, True),
     ("7734SRZ", "Logística del Oriente", "camion", 4, 600.0, True),
-    ("8820TRJ", "Ana Lucía Paredes", "auto", 2, 0.0, True),  # Sin saldo (prueba alerta)
-    ("9015PTS", "Roberto Mamani Condori", "minibus", 2, 3.0, True),  # Saldo insuficiente (prueba alerta)
+    ("8820TRJ", "Ana Lucía Paredes", "auto", 1, 0.0, True),  # Sin saldo (prueba alerta)
+    ("9015PTS", "Roberto Mamani Condori", "minibus", 1, 3.0, True),  # Saldo insuficiente (prueba alerta)
     ("1842ORU", "Trans Copacabana MEM", "bus", 2, 210.0, True),
-    ("2938BNE", "Sofía Castro Salazar", "auto", 2, 95.0, True),
-    ("3317PDN", "José Antonio Gutiérrez", "moto", 2, 20.0, True),
+    ("2938BNE", "Sofía Castro Salazar", "auto", 1, 95.0, True),
+    ("3317PDN", "José Antonio Gutiérrez", "moto", 1, 20.0, True),
     ("4091CHQ", "Constructora Altiplano", "camion", 3, 350.0, True),
-    ("5129LPN", "Sindicato Eduardo Avaroa", "minibus", 2, 48.0, True),
-    ("6408SCZ", "Camila Morales Torrez", "auto", 2, 120.0, True),
+    ("5129LPN", "Sindicato Eduardo Avaroa", "minibus", 1, 48.0, True),
+    ("6408SCZ", "Camila Morales Torrez", "auto", 1, 120.0, True),
     ("7250CBB", "Transporte Pesado Illimani", "camion", 5, 780.0, True),
-    ("8193LPA", "Fernando Chávez Lima", "auto", 2, 45.0, True),
+    ("8193LPA", "Fernando Chávez Lima", "auto", 1, 45.0, True),
     ("9420BTA", "Expreso del Sur S.R.L.", "bus", 3, 310.0, True),
-    ("1576KRS", "Valeria Huanca Nina", "moto", 2, 15.0, True),
-    ("2684DPL", "Jorge Luis Peñaranda", "auto", 2, 200.0, True),
+    ("1576KRS", "Valeria Huanca Nina", "moto", 1, 15.0, True),
+    ("2684DPL", "Jorge Luis Peñaranda", "auto", 1, 200.0, True),
     ("3749FGH", "Distribuidora Nacional", "camion", 2, 180.0, True),
-    ("4852JKL", "Sindicato Mixto Murillo", "minibus", 2, 72.0, True),
-    ("5963QWE", "Patricia Zambrana", "auto", 2, 0.0, True),  # Sin saldo
+    ("4852JKL", "Sindicato Mixto Murillo", "minibus", 1, 72.0, True),
+    ("5963QWE", "Patricia Zambrana", "auto", 1, 0.0, True),  # Sin saldo
     ("6074RTY", "Carga Pesada Bolivia", "camion", 6, 900.0, True),
-    ("7185UIO", "Vehículo Dado de Baja", "auto", 2, 50.0, False),  # Inactivo
+    ("7185UIO", "Vehículo Dado de Baja", "auto", 1, 50.0, False),  # Inactivo
 ]
 
 

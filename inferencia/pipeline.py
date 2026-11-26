@@ -58,12 +58,14 @@ CATEGORY_ALIASES = {
 }
 
 DEFAULT_AXLES_BY_CATEGORY = {
-    "moto": 2,
-    "auto": 2,
-    "minibus": 2,
+    "moto": 1,
+    "auto": 1,
+    "minibus": 1,
     "bus": 2,
-    "camion": 3,
+    "camion": 2,
 }
+
+LIGHT_SINGLE_AXLE_CATEGORIES = {"moto", "auto", "minibus"}
 
 # Palabras de encabezado comunes en placas (ordenadas de mayor a menor longitud)
 IGNORED_OCR_TOKENS = ("ARGENTINA", "MERCOSUR", "BOLIVIA", "CHILE", "PLACA", "PERU", "BOL")
@@ -501,15 +503,67 @@ class TollInferencePipeline:
         return best_candidate
 
     # ------------------------------------------------------------------
-    # M3: Keypoints sobre ruedas -> cálculo de 1, 2, 3, 4, 5, 6+ ejes
-    # Soporta vista lateral, 3/4 y frontal/trasera
+    # M3: Keypoints sobre ruedas -> cálculo de ejes
+    # Regla del sistema:
+    #   - Particulares (auto), minibuses y motos: 1 eje
+    #   - Camiones y buses: 2 ejes (incluyendo doble llanta / 2 ruedas por lado
+    #     como en vista trasera/frontal) o 3, 4, 5, 6+ ejes según ruedas detectadas.
     # ------------------------------------------------------------------
+    def _detect_dual_rear_wheels_cv(
+        self,
+        image_bgr: np.ndarray,
+        vehicle_bbox: Optional[List[int]],
+    ) -> Tuple[int, List[List[float]]]:
+        """
+        Detecta columnas oscuras de llantas en vista trasera/frontal de camiones/buses
+        (por ejemplo: 2 llantas gemelas a la izquierda + 2 a la derecha = 2 ejes por lado).
+        """
+        if vehicle_bbox is None:
+            return 2, []
+        vx1, vy1, vx2, vy2 = vehicle_bbox
+        bw, bh = vx2 - vx1, vy2 - vy1
+        if bw < 60 or bh < 60:
+            return 2, []
+
+        y1 = vy1 + int(bh * 0.48)
+        y2 = vy1 + int(bh * 0.94)
+        roi = image_bgr[y1:y2, vx1:vx2]
+        if roi.size == 0:
+            return 2, []
+
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        # Las llantas son regiones oscuras con textura vertical en los costados izquierdo y derecho
+        dark_mask = (gray < 95).astype(np.float32)
+        col_profile = np.mean(dark_mask, axis=0)
+
+        half = bw // 2
+        left_dark = float(np.mean(col_profile[: max(1, int(bw * 0.42))]))
+        right_dark = float(np.mean(col_profile[min(bw - 1, int(bw * 0.58)) :]))
+        cy = float(y1 + (y2 - y1) * 0.55)
+
+        kps: List[List[float]] = []
+        # Si ambos costados presentan banda ancha de doble neumático (como camión trasero)
+        if left_dark >= 0.35 and right_dark >= 0.35:
+            kps = [
+                [round(vx1 + bw * 0.14, 1), round(cy, 1), 0.85],
+                [round(vx1 + bw * 0.28, 1), round(cy, 1), 0.85],
+                [round(vx1 + bw * 0.72, 1), round(cy, 1), 0.85],
+                [round(vx1 + bw * 0.86, 1), round(cy, 1), 0.85],
+            ]
+            return 2, kps
+
+        kps = [
+            [round(vx1 + bw * 0.22, 1), round(cy, 1), 0.72],
+            [round(vx1 + bw * 0.78, 1), round(cy, 1), 0.72],
+        ]
+        return 2, kps
+
     def _detect_wheels_cv_fallback(
         self,
         image_bgr: np.ndarray,
         vehicle_bbox: Optional[List[int]],
     ) -> List[List[float]]:
-        """Fallback geométrico OpenCV para detectar ruedas visibles cuando M3 aún no tiene pesos custom."""
+        """Fallback geométrico OpenCV para detectar ruedas visibles en vista lateral/3/4."""
         if vehicle_bbox is None:
             return []
         vx1, vy1, vx2, vy2 = vehicle_bbox
@@ -517,8 +571,7 @@ class TollInferencePipeline:
         if bw < 60 or bh < 60:
             return []
 
-        # Ruedas se encuentran siempre en el 42% inferior del vehículo
-        y_start = vy1 + int(bh * 0.58)
+        y_start = vy1 + int(bh * 0.55)
         roi = image_bgr[y_start:vy2, vx1:vx2]
         if roi.size == 0:
             return []
@@ -542,7 +595,7 @@ class TollInferencePipeline:
         if circles is not None:
             pts = sorted(circles[0], key=lambda c: float(c[0]))
             for cx, cy, _r in pts[:6]:
-                found.append([round(float(vx1 + cx), 1), round(float(y_start + cy), 1), 0.65])
+                found.append([round(float(vx1 + cx), 1), round(float(y_start + cy), 1), 0.68])
         return found
 
     def _count_axles_from_keypoints(
@@ -552,37 +605,27 @@ class TollInferencePipeline:
         angulo: str,
         vehicle_bbox: Optional[List[int]],
     ) -> int:
-        """
-        Convierte keypoints de ruedas en número de ejes (1, 2, 3, 4, 5, 6+):
-          - Vista lateral / 3/4: cada rueda en el mismo costado con separación en X corresponde a 1 eje.
-          - Vista frontal/trasera pura: dos ruedas simétricas a igual altura Y pertenecen al mismo eje delantero/trasero.
-          - Soporta 1 eje (remolque / monociclo / 1 rueda visible) hasta 6+ ejes.
-        """
+        # Regla explícita: particulares (auto), minibuses y motos tienen 1 eje
+        if categoria in LIGHT_SINGLE_AXLE_CATEGORIES:
+            return 1
+
+        # Vehículos pesados (camion, bus): mínimo 2 ejes; si en vista lateral hay más ruedas, contar 2..6+
         if not kp_list:
             return DEFAULT_AXLES_BY_CATEGORY.get(categoria, 2)
 
-        if len(kp_list) == 1:
-            # Si solo se distingue 1 rueda/eje claramente
-            return 1 if angulo == "lateral" else DEFAULT_AXLES_BY_CATEGORY.get(categoria, 2)
-
-        # Agrupar keypoints demasiado cercanos (duplicados sobre la misma rueda)
         bw = (vehicle_bbox[2] - vehicle_bbox[0]) if vehicle_bbox else 400
-        bh = (vehicle_bbox[3] - vehicle_bbox[1]) if vehicle_bbox else 300
         min_x_sep = max(14.0, bw * 0.06)
-
         sorted_kps = sorted(kp_list, key=lambda p: p[0])
         unique_wheels: List[List[float]] = []
         for kp in sorted_kps:
             if not unique_wheels or abs(kp[0] - unique_wheels[-1][0]) >= min_x_sep:
                 unique_wheels.append(kp)
 
-        if angulo == "frontal_trasero" and len(unique_wheels) == 2:
-            # En ángulo puramente frontal/trasero las 2 ruedas a la misma altura Y son el mismo eje
-            y_diff = abs(unique_wheels[0][1] - unique_wheels[1][1])
-            if y_diff < bh * 0.10:
-                return DEFAULT_AXLES_BY_CATEGORY.get(categoria, 2)
+        if angulo == "frontal_trasero":
+            # En vista trasera/frontal de camión con doble rueda (4 llantas = 2 por lado) -> 2 ejes
+            return max(2, min(len(unique_wheels) // 2 if len(unique_wheels) >= 4 else 2, 6))
 
-        return max(1, min(len(unique_wheels), 10))
+        return max(2, min(len(unique_wheels), 6))
 
     def _infer_wheel_keypoints(
         self,
@@ -611,6 +654,9 @@ class TollInferencePipeline:
                     if conf >= 0.30 and (x > 1.0 or y > 1.0):
                         kp_list.append([round(x, 1), round(y, 1), round(conf, 4)])
         else:
+            if categoria in ("camion", "bus") and angulo == "frontal_trasero":
+                ejes_rear, kp_rear = self._detect_dual_rear_wheels_cv(image_bgr, vehicle_bbox)
+                return ejes_rear, kp_rear
             kp_list = self._detect_wheels_cv_fallback(image_bgr, vehicle_bbox)
 
         ejes = self._count_axles_from_keypoints(kp_list, categoria, angulo, vehicle_bbox)
@@ -768,13 +814,17 @@ class TollInferencePipeline:
                         np.array([[gx1, gy1], [gx2, gy1], [gx2, gy2], [gx1, gy2]], dtype=np.int32)
                     )
 
-        # PASADA 2 (Zoom estricto en parabrisas/ventanas): solo agrega pasajeros NO bloqueados
+        # PASADA 2 (Zoom estricto en parabrisas/ventanas con mejora CLAHE para ver a través del vidrio)
         crop_y1, crop_y2 = max(0, win_y1), min(img_h, win_y2)
         crop_x1, crop_x2 = max(0, win_x1), min(img_w, win_x2)
         cabin_crop = image_bgr[crop_y1:crop_y2, crop_x1:crop_x2]
         if cabin_crop.size > 0 and cabin_crop.shape[1] >= 50 and cabin_crop.shape[0] >= 40:
+            lab = cv2.cvtColor(cabin_crop, cv2.COLOR_BGR2LAB)
+            l_ch, a_ch, b_ch = cv2.split(lab)
+            clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8))
+            cabin_enhanced = cv2.cvtColor(cv2.merge((clahe.apply(l_ch), a_ch, b_ch)), cv2.COLOR_LAB2BGR)
             preds_cabin = self.m4_passengers_seg.predict(
-                source=cabin_crop, conf=0.35, device=self.device, verbose=False
+                source=cabin_enhanced, conf=0.35, device=self.device, verbose=False
             )
             if preds_cabin and len(preds_cabin[0].boxes) > 0:
                 res_c = preds_cabin[0]
