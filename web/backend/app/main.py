@@ -826,7 +826,37 @@ def listar_pasos(
     if caseta_id:
         query = query.filter(Paso.caseta_id == caseta_id)
     pasos = query.order_by(Paso.created_at.desc()).limit(limit).all()
-    return [_serialize_paso(p) for p in pasos]
+    existing_files = {row[0] for row in db.query(EvidenciaImagen.filename).all()}
+    result = []
+    for p in pasos:
+        d = _serialize_paso(p)
+        fname = os.path.basename(p.imagen_url or "")
+        d["tiene_evidencia"] = bool(
+            fname and (fname in existing_files or os.path.isfile(os.path.join(settings.evidence_dir, fname)))
+        )
+        result.append(d)
+    return result
+
+
+@app.delete("/api/v1/pasos/limpiar-sin-evidencia", tags=["Pasos y Caseta"])
+def limpiar_pasos_sin_evidencia(
+    _admin: Usuario = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Elimina registros de prueba antiguos cuya imagen fue borrada antes de activar persistencia en PostgreSQL."""
+    existing_files = {row[0] for row in db.query(EvidenciaImagen.filename).all()}
+    pasos = db.query(Paso).all()
+    removed = 0
+    for p in pasos:
+        fname = os.path.basename(p.imagen_url or "")
+        has_img = bool(
+            fname and (fname in existing_files or os.path.isfile(os.path.join(settings.evidence_dir, fname)))
+        )
+        if not has_img:
+            db.delete(p)
+            removed += 1
+    db.commit()
+    return {"ok": True, "eliminados": removed}
 
 
 @app.get("/api/v1/alertas", tags=["Alertas"])

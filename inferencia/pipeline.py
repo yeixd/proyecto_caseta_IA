@@ -28,7 +28,16 @@ from ultralytics import YOLO
 
 logger = logging.getLogger("peaje.inferencia")
 
+PIPELINE_VERSION = "2.3-multiangle-ocr"
 VALID_CATEGORIES = {"moto", "auto", "minibus", "camion", "bus"}
+
+MAX_PASSENGERS_BY_CATEGORY = {
+    "moto": 2,
+    "auto": 5,
+    "minibus": 15,
+    "camion": 3,
+    "bus": 45,
+}
 
 CATEGORY_ALIASES = {
     "moto": "moto",
@@ -206,6 +215,7 @@ class TollInferencePipeline:
     def health(self) -> Dict[str, Any]:
         return {
             "status": "ok",
+            "pipeline_version": PIPELINE_VERSION,
             "device": self.device,
             "cuda_available": torch.cuda.is_available(),
             "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
@@ -214,22 +224,38 @@ class TollInferencePipeline:
         }
 
     # ------------------------------------------------------------------
-    # M1: Detección de placas multi-ángulo + deskew + EasyOCR
+    # M1: Detección de placas multi-ángulo + BlackHat + deskew + EasyOCR
     # ------------------------------------------------------------------
     def _preprocess_plate_crop(self, crop: np.ndarray) -> np.ndarray:
         if crop is None or crop.size == 0:
             return crop
         h, w = crop.shape[:2]
-        if w < 220:
-            scale = max(2.0, 260.0 / max(w, 1))
+        if w < 300:
+            scale = max(2.2, 320.0 / max(w, 1))
             crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if len(crop.shape) == 3 else crop
-        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
         enhanced = clahe.apply(gray)
-        # Ligero realce de bordes para placas tomadas en ángulo oblicuo
+        # Reducir ruido manteniendo bordes nítidos de caracteres
+        denoise = cv2.bilateralFilter(enhanced, 5, 40, 40)
         kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
-        sharp = cv2.filter2D(enhanced, -1, kernel)
+        sharp = cv2.filter2D(denoise, -1, kernel)
         return sharp
+
+    def _extract_plate_from_ocr_text(self, raw_text: str) -> str:
+        """Extrae el patrón de placa más probable (ej. 3439FLH, 2379ZGD) incluso con ruido alrededor."""
+        cleaned_full = normalize_plate(raw_text)
+        if BO_PLATE_RE.match(cleaned_full):
+            return cleaned_full
+        # Buscar subpatrón boliviano (3-4 dígitos + 3 letras) dentro de texto OCR con stickers (ej. 'L180236 2379ZGD')
+        m_bo = re.search(r"\d{3,4}[A-Z]{3}", cleaned_full)
+        if m_bo:
+            return m_bo.group(0)
+        # Buscar patrón alternativo (3 letras + 3-4 dígitos)
+        m_alt = re.search(r"[A-Z]{2,3}\d{3,4}[A-Z]?", cleaned_full)
+        if m_alt:
+            return m_alt.group(0)
+        return cleaned_full if len(cleaned_full) <= 8 else cleaned_full[:8]
 
     def _run_ocr_single(self, img: np.ndarray) -> Tuple[str, str, float]:
         if self.ocr_reader is None or img is None or img.size == 0:
@@ -240,75 +266,109 @@ class TollInferencePipeline:
             allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789- ",
             detail=1,
             paragraph=False,
+            text_threshold=0.45,
+            low_text=0.28,
+            contrast_ths=0.1,
+            adjust_contrast=0.7,
         )
         if not results:
             return "", "", 0.0
 
-        # Evaluar tanto texto combinado como cada bloque individual (evita ruido de fondo en fotos amplias)
         best = ("", "", 0.0, 0.0)  # norm, raw, conf, score
         results_sorted = sorted(results, key=lambda item: item[0][0][0])
 
         parts: List[str] = []
         confs: List[float] = []
         for _box, text, conf in results_sorted:
-            norm = normalize_plate(text)
-            if not norm:
+            extracted = self._extract_plate_from_ocr_text(text)
+            if not extracted:
                 continue
-            sc = plate_quality_score(norm, float(conf))
+            sc = plate_quality_score(extracted, float(conf))
             if sc > best[3]:
-                best = (norm, text.strip(), float(conf), sc)
+                best = (extracted, text.strip(), float(conf), sc)
             parts.append(text.strip())
             confs.append(float(conf))
 
         if parts:
             raw_joined = " ".join(parts)
-            norm_joined = normalize_plate(raw_joined)
+            extracted_joined = self._extract_plate_from_ocr_text(raw_joined)
             avg_conf = float(np.mean(confs)) if confs else 0.0
-            sc_joined = plate_quality_score(norm_joined, avg_conf)
+            sc_joined = plate_quality_score(extracted_joined, avg_conf)
             if sc_joined >= best[3]:
-                best = (norm_joined, raw_joined, avg_conf, sc_joined)
+                best = (extracted_joined, raw_joined, avg_conf, sc_joined)
 
         return best[0], best[1], round(best[2], 4)
 
     def _find_plate_candidates_cv(self, image_bgr: np.ndarray) -> List[Tuple[np.ndarray, List[int]]]:
-        """Localiza regiones rectangulares claras (placas inclinadas o en perspectiva 3/4) con OpenCV."""
+        """
+        Localiza regiones de placa desde cualquier ángulo usando:
+          1. BlackHat morfológico + gradiente Sobel X (caracteres oscuros sobre placa clara/blanca)
+          2. Contornos rectangulares Canny en perspectiva
+        """
         candidates: List[Tuple[np.ndarray, List[int]]] = []
+        seen_boxes: List[List[int]] = []
         h, w = image_bgr.shape[:2]
         gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+
+        # Estrategia 1: BlackHat morfológico (excelente para placas bolivianas blancas con letras azules)
+        rect_k = cv2.getStructuringElement(cv2.MORPH_RECT, (17, 5))
+        blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, rect_k)
+        grad_x = cv2.Sobel(blackhat, ddepth=cv2.CV_32F, dx=1, dy=0, ksize=-1)
+        grad_x = np.absolute(grad_x)
+        max_v = float(np.max(grad_x)) if grad_x.size else 0.0
+        if max_v > 0:
+            grad_x = (255.0 * (grad_x / max_v)).astype("uint8")
+        else:
+            grad_x = np.zeros_like(gray)
+        grad_x = cv2.GaussianBlur(grad_x, (5, 5), 0)
+        grad_x = cv2.morphologyEx(grad_x, cv2.MORPH_CLOSE, rect_k)
+        _, thresh_bh = cv2.threshold(grad_x, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+
+        # Estrategia 2: Canny + cierre morfológico
         blur = cv2.bilateralFilter(gray, 9, 50, 50)
-        edges = cv2.Canny(blur, 40, 160)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3))
-        closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+        edges = cv2.Canny(blur, 35, 150)
+        closed_canny = cv2.morphologyEx(
+            edges, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (7, 3))
+        )
 
-        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)[:25]
+        all_contours = []
+        for mask in (thresh_bh, closed_canny):
+            cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            all_contours.extend(sorted(cnts, key=cv2.contourArea, reverse=True)[:18])
 
-        for cnt in contours:
+        all_contours = sorted(all_contours, key=cv2.contourArea, reverse=True)
+
+        for cnt in all_contours:
             area = cv2.contourArea(cnt)
-            if area < (h * w) * 0.002 or area > (h * w) * 0.25:
+            if area < (h * w) * 0.0015 or area > (h * w) * 0.35:
                 continue
             rect = cv2.minAreaRect(cnt)
-            (rcx, rcy), (rw, rh), angle = rect
+            (_rcx, _rcy), (rw, rh), angle = rect
             if rw < 1 or rh < 1:
                 continue
             long_s, short_s = max(rw, rh), min(rw, rh)
             ratio = long_s / short_s
-            if not (1.5 <= ratio <= 5.5):
+            if not (1.35 <= ratio <= 5.8):
                 continue
 
             x, y, bw, bh = cv2.boundingRect(cnt)
-            pad_x = int(bw * 0.12)
-            pad_y = int(bh * 0.18)
+            pad_x = int(bw * 0.16)
+            pad_y = int(bh * 0.22)
             x1, y1 = max(0, x - pad_x), max(0, y - pad_y)
             x2, y2 = min(w, x + bw + pad_x), min(h, y + bh + pad_y)
+
+            # Evitar duplicados muy solapados
+            if any(abs(x1 - sx1) < 18 and abs(y1 - sy1) < 18 for sx1, sy1, _, _ in seen_boxes):
+                continue
+            seen_boxes.append([x1, y1, x2, y2])
+
             crop = image_bgr[y1:y2, x1:x2]
             if crop.size > 0:
-                # Corregir ángulo si la placa está inclinada
                 deskew_angle = angle if rw >= rh else angle + 90.0
-                if -35.0 <= deskew_angle <= 35.0 and abs(deskew_angle) > 3.0:
+                if -35.0 <= deskew_angle <= 35.0 and abs(deskew_angle) > 2.5:
                     crop = rotate_image_bound(crop, deskew_angle)
                 candidates.append((crop, [x1, y1, x2, y2]))
-            if len(candidates) >= 4:
+            if len(candidates) >= 6:
                 break
         return candidates
 
@@ -855,6 +915,10 @@ class TollInferencePipeline:
                         passenger_masks.append(
                             np.array([[gx1, gy1], [gx2, gy1], [gx2, gy2], [gx1, gy2]], dtype=np.int32)
                         )
+
+        max_allowed = MAX_PASSENGERS_BY_CATEGORY.get(categoria, 5)
+        if len(passenger_masks) > max_allowed:
+            passenger_masks = passenger_masks[:max_allowed]
 
         return len(passenger_masks), passenger_masks
 

@@ -174,7 +174,9 @@ export default function EstadoPage() {
             {status.inference?.latency_ms && (
               <p className="text-xs text-emerald-300">
                 Latencia /health: {status.inference.latency_ms} ms
-                {status.inference?.details?.multi_angle_enabled ? " · Multi-ángulo activo" : ""}
+                {status.inference?.details?.pipeline_version
+                  ? ` · Pipeline v${status.inference.details.pipeline_version}`
+                  : " · Pipeline versión antigua (actualiza Colab)"}
               </p>
             )}
             {status.inference?.error && (

@@ -1,12 +1,20 @@
 import React, { useEffect, useState } from "react";
-import { Image as ImageIcon, Search, RefreshCw } from "lucide-react";
+import { Image as ImageIcon, Search, RefreshCw, Trash2 } from "lucide-react";
 import { api, resolveImageUrl } from "../api";
+import { useAuth } from "../context/AuthContext";
 
 export default function PasosPage({ onSelectImage }) {
+  const { isAdmin } = useAuth();
   const [pasos, setPasos] = useState([]);
   const [placaFilter, setPlacaFilter] = useState("");
   const [estadoFilter, setEstadoFilter] = useState("");
   const [loading, setLoading] = useState(false);
+
+  async function cleanMissingImages() {
+    if (!confirm("¿Eliminar los registros antiguos que no tienen imagen guardada?")) return;
+    await api.delete("/api/v1/pasos/limpiar-sin-evidencia");
+    fetchPasos();
+  }
 
   async function fetchPasos() {
     setLoading(true);
@@ -61,6 +69,16 @@ export default function PasosPage({ onSelectImage }) {
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
             Actualizar
           </button>
+          {isAdmin && (
+            <button
+              onClick={cleanMissingImages}
+              className="btn-secondary text-xs flex items-center gap-1.5 text-amber-300 border-amber-500/30"
+              title="Eliminar pruebas antiguas cuya imagen se borró antes de guardarlas en PostgreSQL"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Limpiar sin imagen
+            </button>
+          )}
         </div>
       </div>
 
@@ -82,7 +100,7 @@ export default function PasosPage({ onSelectImage }) {
             {pasos.map((p) => (
               <tr key={p.id} className="hover:bg-slate-800/30">
                 <td className="py-2.5 px-3">
-                  {p.imagen_url ? (
+                  {p.imagen_url && p.tiene_evidencia !== false ? (
                     <img
                       src={resolveImageUrl(p.imagen_url)}
                       alt={p.placa_normalizada}
@@ -94,7 +112,7 @@ export default function PasosPage({ onSelectImage }) {
                     />
                   ) : (
                     <span className="text-xs text-slate-500 flex items-center gap-1">
-                      <ImageIcon className="w-4 h-4" /> N/A
+                      <ImageIcon className="w-4 h-4" /> Sin foto
                     </span>
                   )}
                 </td>

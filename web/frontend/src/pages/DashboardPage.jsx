@@ -175,7 +175,7 @@ export default function DashboardPage({
                   key={p.id}
                   className="bg-slate-950/80 border border-slate-800 rounded-xl p-3 flex flex-col sm:flex-row gap-4 items-start sm:items-center hover:border-slate-700 transition"
                 >
-                  {p.imagen_url ? (
+                  {p.imagen_url && p.tiene_evidencia !== false ? (
                     <img
                       src={resolveImageUrl(p.imagen_url)}
                       alt={p.placa_normalizada}
@@ -186,8 +186,8 @@ export default function DashboardPage({
                       className="w-28 h-20 object-cover rounded-lg border border-slate-700 cursor-pointer hover:opacity-90 shrink-0 bg-slate-900"
                     />
                   ) : (
-                    <div className="w-28 h-20 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center text-xs text-slate-500 shrink-0">
-                      Sin imagen
+                    <div className="w-28 h-20 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center text-[11px] text-slate-500 text-center px-2 shrink-0">
+                      Sin imagen previa
                     </div>
                   )}
 
