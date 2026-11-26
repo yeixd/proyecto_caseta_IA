@@ -10,7 +10,12 @@ import {
   Upload,
   Users
 } from "lucide-react";
-import { api, resolveImageUrl } from "../api";
+import {
+  api,
+  formatVehicleClass,
+  resolveImageUrl,
+  VEHICLE_CLASS_COLORS
+} from "../api";
 
 const STATUS_STYLE = {
   APROBADO: "bg-emerald-500/15 text-emerald-300 border-emerald-500/40",
@@ -208,9 +213,13 @@ export default function DashboardPage({
                       </span>
                     </div>
 
-                    <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-300">
-                      <span>
-                        Categoría: <strong className="capitalize">{p.categoria_detectada}</strong>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-slate-300">
+                      <span
+                        className={`px-2.5 py-0.5 rounded-full font-semibold border ${
+                          VEHICLE_CLASS_COLORS[p.categoria_detectada] || VEHICLE_CLASS_COLORS.auto
+                        }`}
+                      >
+                        {formatVehicleClass(p.categoria_detectada)}
                       </span>
                       <span>
                         Ejes: <strong>{p.ejes_detectados}</strong>

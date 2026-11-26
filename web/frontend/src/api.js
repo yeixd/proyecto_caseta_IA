@@ -41,3 +41,25 @@ export function resolveImageUrl(url) {
   if (url.startsWith("http://") || url.startsWith("https://")) return url;
   return `${API_BASE_URL}${url}`;
 }
+
+export const VEHICLE_CLASS_LABELS = {
+  auto: "Vehículo particular (Auto)",
+  minibus: "Minibús",
+  moto: "Motocicleta",
+  camion: "Camión",
+  bus: "Bus / Flota"
+};
+
+export const VEHICLE_CLASS_COLORS = {
+  auto: "bg-sky-500/15 text-sky-300 border-sky-500/40",
+  minibus: "bg-emerald-500/15 text-emerald-300 border-emerald-500/40",
+  moto: "bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/40",
+  camion: "bg-amber-500/15 text-amber-300 border-amber-500/40",
+  bus: "bg-rose-500/15 text-rose-300 border-rose-500/40"
+};
+
+export function formatVehicleClass(cat) {
+  if (!cat) return "Vehículo particular (Auto)";
+  const key = String(cat).toLowerCase().trim();
+  return VEHICLE_CLASS_LABELS[key] || cat;
+}

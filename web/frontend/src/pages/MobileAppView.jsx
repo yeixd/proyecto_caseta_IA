@@ -14,7 +14,7 @@ import {
   VideoOff,
   X
 } from "lucide-react";
-import { api } from "../api";
+import { api, formatVehicleClass, VEHICLE_CLASS_COLORS } from "../api";
 import { useAuth } from "../context/AuthContext";
 
 const FPS_OPTIONS = [
@@ -381,21 +381,32 @@ function MobileCasetaTab({ casetas, onRefresh }) {
           </div>
 
           <div className="grid grid-cols-2 gap-2 text-xs">
-            <div className="bg-slate-950 rounded-xl p-2.5">
-              <span className="text-slate-400 block">Categoría (M2)</span>
-              <strong className="text-white text-sm capitalize">{paso.categoria_detectada}</strong>
+            <div className="col-span-2 bg-slate-950 rounded-xl p-2.5 flex items-center justify-between">
+              <span className="text-slate-400">Clase de vehículo (M2)</span>
+              <span
+                className={`px-2.5 py-0.5 rounded-full font-bold border ${
+                  VEHICLE_CLASS_COLORS[paso.categoria_detectada] || VEHICLE_CLASS_COLORS.auto
+                }`}
+              >
+                {formatVehicleClass(paso.categoria_detectada)}
+              </span>
             </div>
             <div className="bg-slate-950 rounded-xl p-2.5">
-              <span className="text-slate-400 block">Ejes (M3)</span>
-              <strong className="text-white text-sm">{paso.ejes_detectados} ejes</strong>
+              <span className="text-slate-400 block">Ejes / Llantas (M3)</span>
+              <strong className="text-white text-sm">
+                {paso.ejes_detectados} ejes
+                {lastResult?.inferencia?.vehiculo?.llantas_visibles !== undefined
+                  ? ` (${lastResult.inferencia.vehiculo.llantas_visibles} llantas)`
+                  : ""}
+              </strong>
             </div>
             <div className="bg-slate-950 rounded-xl p-2.5">
               <span className="text-slate-400 block">Pasajeros (M4)</span>
               <strong className="text-cyan-300 text-sm">{paso.pasajeros}</strong>
             </div>
-            <div className="bg-slate-950 rounded-xl p-2.5">
-              <span className="text-slate-400 block">Tarifa</span>
-              <strong className="text-emerald-300 text-sm">
+            <div className="col-span-2 bg-slate-950 rounded-xl p-2.5 flex items-center justify-between">
+              <span className="text-slate-400">Tarifa cobrada</span>
+              <strong className="text-emerald-300 text-base">
                 Bs. {Number(paso.monto).toFixed(2)}
               </strong>
             </div>

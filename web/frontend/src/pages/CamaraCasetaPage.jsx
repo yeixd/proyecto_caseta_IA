@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Camera, Pause, Play, RefreshCw, Video, VideoOff } from "lucide-react";
-import { api } from "../api";
+import { api, formatVehicleClass } from "../api";
 
 const FPS_MODES = [
   { label: "2 FPS", ms: 500 },
@@ -257,10 +257,24 @@ export default function CamaraCasetaPage({ casetas, onRefresh }) {
               </div>
 
               <div className="grid grid-cols-2 gap-3 text-sm">
-                <InfoBox label="Categoría (M2)" value={paso.categoria_detectada} />
-                <InfoBox label="Ejes (M3)" value={`${paso.ejes_detectados} ejes`} />
+                <div className="col-span-2">
+                  <InfoBox
+                    label="Clase de vehículo (M2)"
+                    value={formatVehicleClass(paso.categoria_detectada)}
+                  />
+                </div>
+                <InfoBox
+                  label="Ejes / Llantas (M3)"
+                  value={`${paso.ejes_detectados} ejes${
+                    lastResult?.inferencia?.vehiculo?.llantas_visibles !== undefined
+                      ? ` (${lastResult.inferencia.vehiculo.llantas_visibles} llantas)`
+                      : ""
+                  }`}
+                />
                 <InfoBox label="Pasajeros (M4)" value={String(paso.pasajeros)} />
-                <InfoBox label="Tarifa" value={`Bs. ${Number(paso.monto).toFixed(2)}`} />
+                <div className="col-span-2">
+                  <InfoBox label="Tarifa" value={`Bs. ${Number(paso.monto).toFixed(2)}`} />
+                </div>
               </div>
 
               <div className="text-xs text-slate-400 space-y-1 pt-2 border-t border-slate-800">

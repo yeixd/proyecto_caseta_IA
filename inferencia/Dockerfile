@@ -7,6 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PORT=8000
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
     libgl1 \
     libglib2.0-0 \
     libsm6 \
@@ -18,9 +19,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY requirements.txt /app/requirements.txt
-# PyTorch ya viene instalado con CUDA en la imagen base; instalamos el resto de dependencias fijadas
+# PyTorch ya viene instalado con CUDA en la imagen base; instalamos el resto + CLIP para YOLOE
 RUN grep -vE "^torch(vision)?==" requirements.txt > /tmp/req_no_torch.txt && \
-    pip install --no-cache-dir -r /tmp/req_no_torch.txt
+    pip install --no-cache-dir -r /tmp/req_no_torch.txt && \
+    pip install --no-cache-dir "git+https://github.com/ultralytics/CLIP.git"
 
 COPY diagnostico_entorno.py pipeline.py main.py runpod_handler.py start_runpod.sh /app/
 RUN chmod +x /app/start_runpod.sh && mkdir -p /workspace/models

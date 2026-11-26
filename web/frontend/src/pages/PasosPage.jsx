@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Image as ImageIcon, Search, RefreshCw, Trash2 } from "lucide-react";
-import { api, resolveImageUrl } from "../api";
+import { api, formatVehicleClass, resolveImageUrl } from "../api";
 import { useAuth } from "../context/AuthContext";
 
 export default function PasosPage({ onSelectImage }) {
@@ -122,8 +122,9 @@ export default function PasosPage({ onSelectImage }) {
                     OCR {(p.confianza_ocr * 100).toFixed(0)}% · {Math.round(p.latencia_ms)}ms
                   </div>
                 </td>
-                <td className="py-2.5 px-3 capitalize text-slate-300">
-                  {p.categoria_detectada} · {p.ejes_detectados} ejes
+                <td className="py-2.5 px-3 text-slate-200">
+                  <div className="font-medium">{formatVehicleClass(p.categoria_detectada)}</div>
+                  <div className="text-xs text-slate-400">{p.ejes_detectados} ejes</div>
                 </td>
                 <td className="py-2.5 px-3 text-cyan-300 font-semibold">{p.pasajeros}</td>
                 <td className="py-2.5 px-3 text-emerald-300 font-semibold">
