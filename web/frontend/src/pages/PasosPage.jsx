@@ -130,6 +130,11 @@ export default function PasosPage({ livePasos = [], onSelectImage }) {
                 </td>
                 <td className="py-2.5 px-3">
                   <div className="font-mono font-bold text-white">{p.placa_normalizada || "ILEGIBLE"}</div>
+                  {p.propietario && (
+                    <div className="text-xs text-sky-300 truncate max-w-[230px]" title={p.propietario}>
+                      {p.propietario}
+                    </div>
+                  )}
                   <div className="text-[11px] text-slate-500">
                     OCR {(p.confianza_ocr * 100).toFixed(0)}% · {Math.round(p.latencia_ms)}ms
                   </div>

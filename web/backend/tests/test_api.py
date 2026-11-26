@@ -129,7 +129,7 @@ def test_four_agent_states_and_frame_flow():
     assert r2.status_code == 200
     assert r2.json()["estado"] == "Registrada y con paso"
 
-    # Registrar paso de placa NO REGISTRADA -> debe generar alerta
+    # Registrar paso de placa NO REGISTRADA (cuando auto_registrar=false) -> debe generar alerta
     mock_unreg = {
         "placa": {"texto": "9999ZZZ", "texto_raw": "9999-ZZZ", "confianza": 0.89, "bbox": [10, 10, 80, 40]},
         "vehiculo": {"categoria": "camion", "confianza": 0.90, "area_mascara": 0.41},
@@ -143,12 +143,35 @@ def test_four_agent_states_and_frame_flow():
         rf2 = client.post(
             "/api/v1/pasos/frame",
             headers=headers,
-            data={"caseta_id": "1"},
+            data={"caseta_id": "1", "auto_registrar": "false"},
             files={"file": ("frame2.jpg", b"\xff\xd8\xff\xd9", "image/jpeg")},
         )
     assert rf2.status_code == 200
     assert rf2.json()["paso"]["estado"] == "NO_REGISTRADO"
     assert rf2.json()["alerta"]["tipo"] == "PLACA_NO_REGISTRADA"
+
+    # Verificar auto-registro por defecto (auto_registrar=true): crea vehículo con persona + sindicato en minibus/camion
+    mock_new_minibus = {
+        "placa": {"texto": "5280YIN", "texto_raw": "5280 YIN", "confianza": 0.93, "bbox": [12, 12, 90, 42]},
+        "vehiculo": {"categoria": "minibus", "confianza": 0.91, "area_mascara": 0.35},
+        "ejes": 2,
+        "keypoints": [[110, 210, 0.92], [280, 210, 0.91]],
+        "pasajeros": 7,
+        "latencia_ms": 130.0,
+        "imagen_anotada_b64": "",
+    }
+    with patch("app.main.inference_client.infer_full", new=AsyncMock(return_value=mock_new_minibus)):
+        rf_auto = client.post(
+            "/api/v1/pasos/frame",
+            headers=headers,
+            data={"caseta_id": "1"},
+            files={"file": ("minibus.jpg", b"\xff\xd8\xff\xd9", "image/jpeg")},
+        )
+    assert rf_auto.status_code == 200
+    auto_body = rf_auto.json()
+    assert auto_body["paso"]["estado"] == "APROBADO"
+    assert auto_body["paso"]["auto_registrado"] is True
+    assert "—" in auto_body["paso"]["propietario"]  # Nombre de persona + Sindicato/Cooperativa
 
     # 3. Identificada no registrada
     r3 = client.post("/api/v1/agente/chat", headers=headers, data={"mensaje": "9999-ZZZ"})

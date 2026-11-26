@@ -482,6 +482,14 @@ function MobileCasetaTab({ casetas, pasos = [], onRefresh, onExitMobile }) {
           </div>
 
           <div className="grid grid-cols-2 gap-2 text-xs">
+            {paso.propietario && (
+              <div className="col-span-2 bg-slate-950 rounded-xl p-2.5">
+                <span className="text-slate-400 block text-[11px]">
+                  Propietario / Sindicato {paso.auto_registrado ? "(Auto-registrado)" : ""}
+                </span>
+                <strong className="text-white text-xs">{paso.propietario}</strong>
+              </div>
+            )}
             <div className="col-span-2 bg-slate-950 rounded-xl p-2.5 flex items-center justify-between">
               <span className="text-slate-400">Clase de vehículo (M2)</span>
               <span

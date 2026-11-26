@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from "react";
 import { Plus, Trash2, Edit3, Shield, Search } from "lucide-react";
-import { api } from "../api";
+import { api, formatVehicleClass, VEHICLE_CLASS_COLORS } from "../api";
 import { useAuth } from "../context/AuthContext";
 
-export default function VehiculosPage({ onRefreshGlobal }) {
+export default function VehiculosPage({ liveTrigger, onRefreshGlobal }) {
   const { isAdmin } = useAuth();
   const [subTab, setSubTab] = useState("vehiculos");
   const [vehiculos, setVehiculos] = useState([]);
@@ -55,7 +55,7 @@ export default function VehiculosPage({ onRefreshGlobal }) {
 
   useEffect(() => {
     loadAll();
-  }, [search]);
+  }, [search, liveTrigger]);
 
   async function submitVehiculo(e) {
     e.preventDefault();
@@ -289,8 +289,29 @@ export default function VehiculosPage({ onRefreshGlobal }) {
                   {vehiculos.map((v) => (
                     <tr key={v.id} className="hover:bg-slate-800/30">
                       <td className="py-2.5 px-3 font-mono font-bold text-white">{v.placa}</td>
-                      <td className="py-2.5 px-3 text-slate-300">{v.propietario}</td>
-                      <td className="py-2.5 px-3 capitalize text-slate-300">{v.categoria}</td>
+                      <td className="py-2.5 px-3 text-slate-200">
+                        {v.propietario?.includes(" — ") ? (
+                          <div>
+                            <div className="font-medium text-white">
+                              {v.propietario.split(" — ")[0]}
+                            </div>
+                            <div className="text-xs text-amber-300 font-medium">
+                              {v.propietario.split(" — ")[1]}
+                            </div>
+                          </div>
+                        ) : (
+                          <span>{v.propietario}</span>
+                        )}
+                      </td>
+                      <td className="py-2.5 px-3">
+                        <span
+                          className={`text-xs px-2.5 py-0.5 rounded-full font-semibold border ${
+                            VEHICLE_CLASS_COLORS[v.categoria] || VEHICLE_CLASS_COLORS.auto
+                          }`}
+                        >
+                          {formatVehicleClass(v.categoria)}
+                        </span>
+                      </td>
                       <td className="py-2.5 px-3 text-slate-300">{v.ejes}</td>
                       <td
                         className={`py-2.5 px-3 font-semibold ${

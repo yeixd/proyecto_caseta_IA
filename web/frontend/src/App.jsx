@@ -119,7 +119,9 @@ export default function App() {
                 recaudacion_hoy:
                   (prev.recaudacion_hoy || 0) + Number(msg.data.monto || 0),
                 pasajeros_hoy: (prev.pasajeros_hoy || 0) + Number(msg.data.pasajeros || 0),
-                alertas_pendientes: (prev.alertas_pendientes || 0) + (msg.alerta ? 1 : 0)
+                alertas_pendientes: (prev.alertas_pendientes || 0) + (msg.alerta ? 1 : 0),
+                total_vehiculos:
+                  (prev.total_vehiculos || 0) + (msg.data.auto_registrado ? 1 : 0)
               };
             });
           } else if (msg.event === "alerta_atendida" && msg.data) {
@@ -271,7 +273,9 @@ export default function App() {
         {activeTab === "camara" && (
           <CamaraCasetaPage casetas={casetas} onRefresh={fetchInitialData} />
         )}
-        {activeTab === "vehiculos" && <VehiculosPage onRefreshGlobal={fetchInitialData} />}
+        {activeTab === "vehiculos" && (
+          <VehiculosPage liveTrigger={pasos[0]?.id} onRefreshGlobal={fetchInitialData} />
+        )}
         {activeTab === "pasos" && <PasosPage livePasos={pasos} onSelectImage={setModalImage} />}
         {activeTab === "alertas" && (
           <AlertasPage alertas={alertas} onRefresh={fetchInitialData} onSelectImage={setModalImage} />

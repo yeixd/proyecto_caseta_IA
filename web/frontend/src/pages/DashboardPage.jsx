@@ -226,7 +226,18 @@ export default function DashboardPage({
                           <Smartphone className="w-3 h-3" /> Móvil
                         </span>
                       )}
+                      {p.auto_registrado && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                          ✨ Auto-registrado
+                        </span>
+                      )}
                     </div>
+
+                    {p.propietario && (
+                      <div className="mt-1 text-xs text-slate-200 font-medium truncate">
+                        👤 {p.propietario}
+                      </div>
+                    )}
 
                     <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-slate-300">
                       <span

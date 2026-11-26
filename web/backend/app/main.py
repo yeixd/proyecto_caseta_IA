@@ -17,6 +17,7 @@ gestión de alertas, estado de inferencia/Ollama/hardware y WebSockets en tiempo
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
 import os
 import time
@@ -82,7 +83,7 @@ from app.schemas import (
     VehiculoOut,
     VehiculoUpdate,
 )
-from app.seed import seed_database
+from app.seed import INITIAL_SALDO_BY_CATEGORY, generate_fictional_owner, seed_database
 
 logging.basicConfig(
     level=logging.INFO,
@@ -202,11 +203,30 @@ def _resolve_tariff(db: Session, categoria: str, ejes: int) -> float:
     return 5.0
 
 
-def _serialize_paso(paso: Paso, caseta_nombre: Optional[str] = None) -> Dict[str, Any]:
+def _generate_provisional_plate(image_bytes: bytes, categoria: str) -> str:
+    """Genera una placa boliviana determinista cuando la foto del vehículo (ej. vista trasera/lateral) no muestra matrícula."""
+    digest = hashlib.sha1(image_bytes).digest()
+    num = 1000 + (int.from_bytes(digest[:2], "big") % 8999)
+    alphabet = "ABCDEFGHJKLMNPRSTUVWXYZ"
+    suffix_map = {"camion": "TRK", "minibus": "MNB", "bus": "BUS", "moto": "MTO"}
+    last = alphabet[digest[2] % len(alphabet)]
+    if categoria in suffix_map:
+        letters = suffix_map[categoria][:2] + last
+    else:
+        letters = "".join(alphabet[b % len(alphabet)] for b in digest[2:5])
+    return f"{num}{letters}"
+
+
+def _serialize_paso(
+    paso: Paso,
+    caseta_nombre: Optional[str] = None,
+    propietario: Optional[str] = None,
+) -> Dict[str, Any]:
     return {
         "id": paso.id,
         "placa_leida": paso.placa_leida,
         "placa_normalizada": paso.placa_normalizada,
+        "propietario": propietario,
         "confianza_ocr": paso.confianza_ocr,
         "categoria_detectada": paso.categoria_detectada,
         "ejes_detectados": paso.ejes_detectados,
@@ -285,6 +305,10 @@ async def registrar_paso_frame(
     file: UploadFile = File(..., description="Frame JPEG/PNG capturado en Modo Caseta"),
     caseta_id: int = Form(default=1, description="ID de la caseta que captura el frame"),
     origen: str = Form(default="web", description="Origen de la captura: movil | camara_web | web"),
+    auto_registrar: bool = Form(
+        default=True,
+        description="Si es True, registra automáticamente vehículos nuevos con propietario/sindicato ficticio",
+    ),
     current_user: Usuario = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -335,16 +359,38 @@ async def registrar_paso_frame(
     monto_cobrado = tarifa_monto
     hw_signal = "APROBADO"
     hw_level = "success"
+    auto_registrado_nuevo = False
+    conf_vehiculo = float(vehiculo_obj.get("confianza") or 0.0)
+
+    # Si se subió imagen de un vehículo real sin placa visible (ej. toma trasera/lateral), asignar placa provisional determinista
+    if auto_registrar and (not placa_norm or len(placa_norm) < 4) and conf_vehiculo > 0.05:
+        placa_norm = _generate_provisional_plate(image_bytes, categoria)
+        if not placa_leida:
+            placa_leida = f"{placa_norm} (ASIGNADA)"
 
     if not placa_norm or len(placa_norm) < 4:
         estado_paso = "PLACA_ILEGIBLE"
-        # Mantener la tarifa calculada por categoría + ejes para que el cobro/precio no quede en 0
         monto_cobrado = tarifa_monto
         hw_signal = "ALERTA_NO_REGISTRADO"
         hw_level = "warning"
         vehiculo_db = None
     else:
         vehiculo_db = db.query(Vehiculo).filter(Vehiculo.placa == placa_norm).first()
+        if not vehiculo_db and auto_registrar:
+            propietario_ficticio = generate_fictional_owner(placa_norm, categoria)
+            saldo_inicial = INITIAL_SALDO_BY_CATEGORY.get(categoria, 160.0)
+            vehiculo_db = Vehiculo(
+                placa=placa_norm,
+                propietario=propietario_ficticio,
+                categoria=categoria,
+                ejes=ejes,
+                saldo=saldo_inicial,
+                activo=True,
+            )
+            db.add(vehiculo_db)
+            db.flush()
+            auto_registrado_nuevo = True
+
         if not vehiculo_db:
             estado_paso = "NO_REGISTRADO"
             monto_cobrado = tarifa_monto
@@ -363,6 +409,8 @@ async def registrar_paso_frame(
         else:
             estado_paso = "APROBADO"
             monto_cobrado = tarifa_monto
+            vehiculo_db.categoria = categoria
+            vehiculo_db.ejes = ejes
             vehiculo_db.saldo = round(vehiculo_db.saldo - tarifa_monto, 2)
             hw_signal = "APROBADO"
             hw_level = "success"
@@ -419,9 +467,14 @@ async def registrar_paso_frame(
     if alerta_creada:
         db.refresh(alerta_creada)
 
-    paso_payload = _serialize_paso(paso, caseta_nombre=caseta.nombre)
+    paso_payload = _serialize_paso(
+        paso,
+        caseta_nombre=caseta.nombre,
+        propietario=vehiculo_db.propietario if vehiculo_db else None,
+    )
     paso_payload["tiene_evidencia"] = True
     paso_payload["origen"] = origen
+    paso_payload["auto_registrado"] = auto_registrado_nuevo
     paso_payload["llantas_visibles"] = infer_data.get(
         "llantas_visibles", vehiculo_obj.get("llantas_visibles")
     )
@@ -834,9 +887,16 @@ def listar_pasos(
         query = query.filter(Paso.caseta_id == caseta_id)
     pasos = query.order_by(Paso.created_at.desc()).limit(limit).all()
     existing_files = {row[0] for row in db.query(EvidenciaImagen.filename).all()}
+    plates_in_page = {p.placa_normalizada for p in pasos if p.placa_normalizada}
+    owners_map = {}
+    if plates_in_page:
+        owners_map = {
+            v.placa: v.propietario
+            for v in db.query(Vehiculo).filter(Vehiculo.placa.in_(plates_in_page)).all()
+        }
     result = []
     for p in pasos:
-        d = _serialize_paso(p)
+        d = _serialize_paso(p, propietario=owners_map.get(p.placa_normalizada))
         fname = os.path.basename(p.imagen_url or "")
         d["tiene_evidencia"] = bool(
             fname and (fname in existing_files or os.path.isfile(os.path.join(settings.evidence_dir, fname)))

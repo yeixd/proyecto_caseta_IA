@@ -5,12 +5,112 @@ Precarga inicial (seed) idempotente:
   - Precarga casetas, tabla de tarifas por categoría/ejes y 25 vehículos de prueba (>= 20).
 """
 
+import hashlib
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import Caseta, Tarifa, Usuario, Vehiculo
+from app.models import Caseta, Paso, Tarifa, Usuario, Vehiculo
 
 DOCENTE_EMAIL = "doc.alvaro.pinto.ma@unifranz.edu.bo"
+
+NOMBRES_FICTICIOS_PARTICULARES = [
+    "Rodrigo Alejandro Mamani Quispe",
+    "Valeria Fernanda Torrez Flores",
+    "Mauricio Esteban Rojas Condori",
+    "Daniela Alejandra Vargas Rocha",
+    "Camila Lucía Morales Choque",
+    "Javier Eduardo Peñaranda Lima",
+    "Paola Andrea Gutiérrez Nina",
+    "Álvaro Sebastián Aguilar Castro",
+    "Gabriela Sofía Chávez Huanca",
+    "Cristian David Salazar Ticona",
+    "Lorena Natalia Zambrana Paco",
+    "Jorge Andrés Limachi Torrico",
+    "Miriam Beatriz Apaza Callisaya",
+    "Fernando José Mendoza Paredes",
+    "Natalia Carolina Quiroga Soto",
+    "Diego Armando Velasco Guzmán",
+]
+
+CONDUCTORES_TRANSPORTE = [
+    "Juan Carlos Quispe",
+    "Rubén Darío Condori",
+    "Marco Antonio Mamani",
+    "Héctor Hugo Choque",
+    "Ramiro Luis Gutiérrez",
+    "Óscar Eduardo Peñaranda",
+    "Víctor Hugo Ticona",
+    "Miguel Ángel Limachi",
+    "Freddy Reynaldo Callisaya",
+    "Luis Alberto Huanca",
+    "Édgar Iván Apaza",
+    "César Augusto Paco",
+    "Gustavo Adolfo Torrico",
+    "Reynaldo Félix Nina",
+]
+
+SINDICATOS_MINIBUS = [
+    "Sindicato Mixto Señor de Mayo",
+    "Sindicato de Transporte Villa Victoria",
+    "Sindicato Eduardo Avaroa",
+    "Cooperativa de Transporte 14 de Septiembre",
+    "Sindicato Mixto Litoral",
+    "Sindicato 24 de Julio",
+    "Sindicato Pedro Domingo Murillo",
+    "Cooperativa Unión Altiplano",
+]
+
+SINDICATOS_CAMION = [
+    "Sindicato de Transporte Pesado Illimani",
+    "Sindicato Pesado Trans Altiplano Sur",
+    "Federación de Camioneros 16 de Noviembre",
+    "Sindicato de Carga Pesada Sajama",
+    "Cooperativa Transporte Pesado Andino",
+    "Sindicato Mixto Carga Real Bolivia",
+    "Sindicato Pesado Estrella del Oriente",
+    "Asociación Transporte Pesado Tunari",
+]
+
+SINDICATOS_BUS = [
+    "Sindicato Flota Trans Copacabana",
+    "Sindicato Mixto Expreso Bolívar",
+    "Cooperativa Interdepartamental El Dorado",
+    "Sindicato Flota Trans Illimani",
+]
+
+INITIAL_SALDO_BY_CATEGORY = {
+    "moto": 80.0,
+    "auto": 160.0,
+    "minibus": 240.0,
+    "bus": 450.0,
+    "camion": 580.0,
+}
+
+
+def generate_fictional_owner(placa: str, categoria: str) -> str:
+    """
+    Genera de forma determinista un propietario ficticio realista según la clase del vehículo:
+      - Auto / Moto: nombre completo de persona particular.
+      - Minibús / Camión / Bus: nombre del socio conductor + nombre del Sindicato / Cooperativa.
+    """
+    digest = hashlib.sha256(f"{placa}:{categoria}".encode("utf-8")).digest()
+    h1 = int.from_bytes(digest[:4], "big")
+    h2 = int.from_bytes(digest[4:8], "big")
+    cat = (categoria or "auto").lower().strip()
+
+    if cat == "minibus":
+        chofer = CONDUCTORES_TRANSPORTE[h1 % len(CONDUCTORES_TRANSPORTE)]
+        sind = SINDICATOS_MINIBUS[h2 % len(SINDICATOS_MINIBUS)]
+        return f"{chofer} — {sind}"
+    if cat == "camion":
+        chofer = CONDUCTORES_TRANSPORTE[h1 % len(CONDUCTORES_TRANSPORTE)]
+        sind = SINDICATOS_CAMION[h2 % len(SINDICATOS_CAMION)]
+        return f"{chofer} — {sind}"
+    if cat == "bus":
+        chofer = CONDUCTORES_TRANSPORTE[h1 % len(CONDUCTORES_TRANSPORTE)]
+        sind = SINDICATOS_BUS[h2 % len(SINDICATOS_BUS)]
+        return f"{chofer} — {sind}"
+    return NOMBRES_FICTICIOS_PARTICULARES[h1 % len(NOMBRES_FICTICIOS_PARTICULARES)]
 
 DEFAULT_CASETAS = [
     ("Caseta Autopista Norte", "Autopista La Paz - El Alto, Km 5"),
@@ -37,31 +137,31 @@ DEFAULT_TARIFAS = [
 
 # 25 vehículos de prueba (particulares, minibuses y motos con 1 eje; camiones y buses con 2+ ejes)
 DEFAULT_VEHICULOS = [
-    ("2481KLM", "Carlos Mendoza Quispe", "auto", 1, 150.0, True),
-    ("3092XTR", "María Elena Vargas", "auto", 1, 85.5, True),
-    ("4510BGD", "Transportes Andino S.R.L.", "camion", 3, 420.0, True),
-    ("5821LPZ", "Cooperativa 16 de Julio", "minibus", 1, 64.0, True),
-    ("6190CBX", "Flota Bolívar S.A.", "bus", 3, 500.0, True),
-    ("1204MTO", "Diego Rojas Flores", "moto", 1, 30.0, True),
-    ("7734SRZ", "Logística del Oriente", "camion", 4, 600.0, True),
-    ("8820TRJ", "Ana Lucía Paredes", "auto", 1, 0.0, True),  # Sin saldo (prueba alerta)
-    ("9015PTS", "Roberto Mamani Condori", "minibus", 1, 3.0, True),  # Saldo insuficiente (prueba alerta)
-    ("1842ORU", "Trans Copacabana MEM", "bus", 2, 210.0, True),
-    ("2938BNE", "Sofía Castro Salazar", "auto", 1, 95.0, True),
-    ("3317PDN", "José Antonio Gutiérrez", "moto", 1, 20.0, True),
-    ("4091CHQ", "Constructora Altiplano", "camion", 3, 350.0, True),
-    ("5129LPN", "Sindicato Eduardo Avaroa", "minibus", 1, 48.0, True),
-    ("6408SCZ", "Camila Morales Torrez", "auto", 1, 120.0, True),
-    ("7250CBB", "Transporte Pesado Illimani", "camion", 5, 780.0, True),
-    ("8193LPA", "Fernando Chávez Lima", "auto", 1, 45.0, True),
-    ("9420BTA", "Expreso del Sur S.R.L.", "bus", 3, 310.0, True),
-    ("1576KRS", "Valeria Huanca Nina", "moto", 1, 15.0, True),
-    ("2684DPL", "Jorge Luis Peñaranda", "auto", 1, 200.0, True),
-    ("3749FGH", "Distribuidora Nacional", "camion", 2, 180.0, True),
-    ("4852JKL", "Sindicato Mixto Murillo", "minibus", 1, 72.0, True),
-    ("5963QWE", "Patricia Zambrana", "auto", 1, 0.0, True),  # Sin saldo
-    ("6074RTY", "Carga Pesada Bolivia", "camion", 6, 900.0, True),
-    ("7185UIO", "Vehículo Dado de Baja", "auto", 1, 50.0, False),  # Inactivo
+    ("2481KLM", "Carlos Mendoza Quispe", "auto", 2, 150.0, True),
+    ("3092XTR", "María Elena Vargas", "auto", 2, 85.5, True),
+    ("4510BGD", "Ramiro Gutiérrez — Sindicato de Transporte Pesado Illimani", "camion", 3, 420.0, True),
+    ("5821LPZ", "Juan Carlos Quispe — Cooperativa 14 de Septiembre", "minibus", 2, 64.0, True),
+    ("6190CBX", "Fernando Salazar — Sindicato Expreso Bolívar", "bus", 3, 500.0, True),
+    ("1204MTO", "Diego Rojas Flores", "moto", 2, 30.0, True),
+    ("7734SRZ", "Óscar Peñaranda — Sindicato Pesado Estrella del Oriente", "camion", 4, 600.0, True),
+    ("8820TRJ", "Ana Lucía Paredes", "auto", 2, 0.0, True),  # Sin saldo (prueba alerta)
+    ("9015PTS", "Roberto Mamani — Sindicato Mixto Señor de Mayo", "minibus", 2, 3.0, True),  # Saldo insuficiente (prueba alerta)
+    ("1842ORU", "Gustavo Torrico — Sindicato Flota Trans Copacabana", "bus", 2, 210.0, True),
+    ("2938BNE", "Sofía Castro Salazar", "auto", 2, 95.0, True),
+    ("3317PDN", "José Antonio Gutiérrez", "moto", 2, 20.0, True),
+    ("4091CHQ", "Víctor Hugo Ticona — Sindicato Pesado Trans Altiplano Sur", "camion", 3, 350.0, True),
+    ("5129LPN", "Marco Antonio Choque — Sindicato Eduardo Avaroa", "minibus", 2, 48.0, True),
+    ("6408SCZ", "Camila Morales Torrez", "auto", 2, 120.0, True),
+    ("7250CBB", "Miguel Ángel Limachi — Federación de Camioneros 16 de Noviembre", "camion", 5, 780.0, True),
+    ("8193LPA", "Fernando Chávez Lima", "auto", 2, 45.0, True),
+    ("9420BTA", "César Augusto Paco — Cooperativa Interdepartamental El Dorado", "bus", 3, 310.0, True),
+    ("1576KRS", "Valeria Huanca Nina", "moto", 2, 15.0, True),
+    ("2684DPL", "Jorge Luis Peñaranda", "auto", 2, 200.0, True),
+    ("3749FGH", "Freddy Callisaya — Cooperativa Transporte Pesado Andino", "camion", 2, 180.0, True),
+    ("4852JKL", "Rubén Darío Condori — Sindicato Pedro Domingo Murillo", "minibus", 2, 72.0, True),
+    ("5963QWE", "Patricia Zambrana", "auto", 2, 0.0, True),  # Sin saldo
+    ("6074RTY", "Reynaldo Nina — Sindicato de Carga Pesada Sajama", "camion", 6, 900.0, True),
+    ("7185UIO", "Vehículo Dado de Baja", "auto", 2, 50.0, False),  # Inactivo
 ]
 
 
@@ -128,7 +228,8 @@ def seed_database(db: Session) -> None:
 
     # 4. Vehículos (>= 20 vehículos de prueba)
     for placa, propietario, categoria, ejes, saldo, activo in DEFAULT_VEHICULOS:
-        if not db.query(Vehiculo).filter(Vehiculo.placa == placa).first():
+        existing_v = db.query(Vehiculo).filter(Vehiculo.placa == placa).first()
+        if not existing_v:
             db.add(
                 Vehiculo(
                     placa=placa,
@@ -139,5 +240,30 @@ def seed_database(db: Session) -> None:
                     activo=activo,
                 )
             )
+        elif categoria in ("minibus", "camion", "bus") and "—" not in existing_v.propietario:
+            existing_v.propietario = propietario
+
+    # 5. Empadronar retroactivamente pasos previos en BD que aún no tenían vehículo registrado
+    known_plates = {row[0] for row in db.query(Vehiculo.placa).all() if row[0]}
+    prev_pasos = db.query(Paso).order_by(Paso.created_at.desc()).all()
+    for p in prev_pasos:
+        pl = (p.placa_normalizada or "").strip()
+        if len(pl) >= 4 and pl not in known_plates:
+            cat = (p.categoria_detectada or "auto").lower()
+            ej = max(2, int(p.ejes_detectados or 2))
+            saldo_ini = max(20.0, INITIAL_SALDO_BY_CATEGORY.get(cat, 150.0) - float(p.monto or 0.0))
+            db.add(
+                Vehiculo(
+                    placa=pl,
+                    propietario=generate_fictional_owner(pl, cat),
+                    categoria=cat,
+                    ejes=ej,
+                    saldo=round(saldo_ini, 2),
+                    activo=True,
+                )
+            )
+            known_plates.add(pl)
+            if p.estado == "NO_REGISTRADO":
+                p.estado = "APROBADO"
 
     db.commit()
