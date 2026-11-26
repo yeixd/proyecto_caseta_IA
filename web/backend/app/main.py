@@ -284,6 +284,7 @@ def auth_me(current_user: Usuario = Depends(get_current_user)):
 async def registrar_paso_frame(
     file: UploadFile = File(..., description="Frame JPEG/PNG capturado en Modo Caseta"),
     caseta_id: int = Form(default=1, description="ID de la caseta que captura el frame"),
+    origen: str = Form(default="web", description="Origen de la captura: movil | camara_web | web"),
     current_user: Usuario = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -419,6 +420,12 @@ async def registrar_paso_frame(
         db.refresh(alerta_creada)
 
     paso_payload = _serialize_paso(paso, caseta_nombre=caseta.nombre)
+    paso_payload["tiene_evidencia"] = True
+    paso_payload["origen"] = origen
+    paso_payload["llantas_visibles"] = infer_data.get(
+        "llantas_visibles", vehiculo_obj.get("llantas_visibles")
+    )
+    paso_payload["vista"] = infer_data.get("vista", vehiculo_obj.get("angulo"))
     alerta_payload = _serialize_alerta(alerta_creada) if alerta_creada else None
 
     # Emitir paso y alerta en tiempo real al panel web

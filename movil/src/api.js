@@ -72,6 +72,7 @@ export async function sendCasetaFrame(token, imageUri, casetaId) {
   const baseUrl = await getApiBaseUrl();
   const formData = new FormData();
   formData.append("caseta_id", String(casetaId));
+  formData.append("origen", "movil");
   formData.append("file", {
     uri: imageUri,
     name: `frame_${Date.now()}.jpg`,
@@ -89,7 +90,21 @@ export async function sendCasetaFrame(token, imageUri, casetaId) {
   if (!res.ok) {
     throw new Error(data.detail || `Error HTTP ${res.status} enviando frame.`);
   }
-  return data;
+  return { ...data, baseUrl };
+}
+
+export const VEHICLE_CLASS_LABELS = {
+  auto: "Vehículo particular (Auto)",
+  minibus: "Minibús",
+  moto: "Motocicleta",
+  camion: "Camión",
+  bus: "Bus / Flota"
+};
+
+export function formatVehicleClass(cat) {
+  if (!cat) return "Vehículo particular (Auto)";
+  const key = String(cat).toLowerCase().trim();
+  return VEHICLE_CLASS_LABELS[key] || cat;
 }
 
 export async function sendAgentQuery(token, mensaje, imageUri = null) {

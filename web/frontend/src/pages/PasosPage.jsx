@@ -3,12 +3,24 @@ import { Image as ImageIcon, Search, RefreshCw, Trash2 } from "lucide-react";
 import { api, formatVehicleClass, resolveImageUrl } from "../api";
 import { useAuth } from "../context/AuthContext";
 
-export default function PasosPage({ onSelectImage }) {
+export default function PasosPage({ livePasos = [], onSelectImage }) {
   const { isAdmin } = useAuth();
   const [pasos, setPasos] = useState([]);
   const [placaFilter, setPlacaFilter] = useState("");
   const [estadoFilter, setEstadoFilter] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // Incorporar automáticamente capturas entrantes del móvil vía WebSocket sin recargar
+  useEffect(() => {
+    if (!livePasos.length || placaFilter.trim() || estadoFilter) return;
+    setPasos((prev) => {
+      const map = new Map();
+      [...livePasos, ...prev].forEach((item) => {
+        if (item?.id) map.set(item.id, { ...map.get(item.id), ...item });
+      });
+      return Array.from(map.values()).sort((a, b) => b.id - a.id).slice(0, 100);
+    });
+  }, [livePasos, placaFilter, estadoFilter]);
 
   async function cleanMissingImages() {
     if (!confirm("¿Eliminar los registros antiguos que no tienen imagen guardada?")) return;

@@ -7,11 +7,13 @@ import {
   CheckCircle2,
   Clock,
   Cpu,
+  Smartphone,
   Upload,
   Users
 } from "lucide-react";
 import {
   api,
+  compressImageForUpload,
   formatVehicleClass,
   resolveImageUrl,
   VEHICLE_CLASS_COLORS
@@ -51,12 +53,20 @@ export default function DashboardPage({
     setUploading(true);
     setUploadMsg("");
     try {
+      const optimized = await compressImageForUpload(file, 1280, 0.84);
       const fd = new FormData();
-      fd.append("file", file);
+      fd.append("file", optimized, (file.name || "frame.jpg").replace(/\.[^.]+$/, ".jpg"));
       fd.append("caseta_id", String(selectedCaseta || casetas[0]?.id || 1));
+      fd.append("origen", "web");
       const { data } = await api.post("/api/v1/pasos/frame", fd);
       setUploadMsg(
-        `Frame procesado: placa ${data.paso.placa_normalizada || "ILEGIBLE"} | ${data.paso.categoria_detectada} | ${data.paso.ejes_detectados} ejes | ${data.paso.pasajeros} pasajeros | ${data.paso.estado}`
+        `Frame procesado: placa ${data.paso.placa_normalizada || "ILEGIBLE"} | ${formatVehicleClass(
+          data.paso.categoria_detectada
+        )} | ${data.paso.ejes_detectados} ejes${
+          data.paso.llantas_visibles !== undefined ? ` (${data.paso.llantas_visibles} llantas)` : ""
+        } | ${data.paso.pasajeros} pasajeros | Bs. ${Number(data.paso.monto).toFixed(2)} (${
+          data.paso.estado
+        })`
       );
       onRefresh();
     } catch (err) {
@@ -211,6 +221,11 @@ export default function DashboardPage({
                       <span className="text-xs text-slate-400">
                         OCR: {(p.confianza_ocr * 100).toFixed(0)}%
                       </span>
+                      {p.origen === "movil" && (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/40">
+                          <Smartphone className="w-3 h-3" /> Móvil
+                        </span>
+                      )}
                     </div>
 
                     <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-slate-300">
@@ -223,6 +238,7 @@ export default function DashboardPage({
                       </span>
                       <span>
                         Ejes: <strong>{p.ejes_detectados}</strong>
+                        {p.llantas_visibles !== undefined ? ` (${p.llantas_visibles} llantas)` : ""}
                       </span>
                       <span>
                         Pasajeros: <strong className="text-cyan-300">{p.pasajeros}</strong>

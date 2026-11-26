@@ -88,6 +88,7 @@ export default function CamaraCasetaPage({ casetas, onRefresh }) {
       const fd = new FormData();
       fd.append("file", blob, `camara_${Date.now()}.jpg`);
       fd.append("caseta_id", String(casetaId || casetas[0]?.id || 1));
+      fd.append("origen", "movil");
 
       const { data } = await api.post("/api/v1/pasos/frame", fd);
       setLastResult(data);

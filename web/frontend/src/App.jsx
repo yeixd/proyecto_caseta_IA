@@ -92,6 +92,7 @@ export default function App() {
       ws = new WebSocket(buildPanelWsUrl(token));
       ws.onopen = () => {
         setWsConnected(true);
+        fetchInitialData();
         pingTimer = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) ws.send("ping");
         }, 25000);
@@ -100,9 +101,15 @@ export default function App() {
         try {
           const msg = JSON.parse(event.data);
           if (msg.event === "nuevo_paso" && msg.data) {
-            setPasos((prev) => [msg.data, ...prev].slice(0, 50));
+            setPasos((prev) => [
+              msg.data,
+              ...prev.filter((p) => p.id !== msg.data.id)
+            ].slice(0, 50));
             if (msg.alerta) {
-              setAlertas((prev) => [msg.alerta, ...prev].slice(0, 50));
+              setAlertas((prev) => [
+                msg.alerta,
+                ...prev.filter((a) => a.id !== msg.alerta.id)
+              ].slice(0, 50));
             }
             setSummary((prev) => {
               if (!prev) return prev;
@@ -137,13 +144,19 @@ export default function App() {
     }
 
     connect();
+    // Respaldo de sincronización cada 6s por si la red móvil o proxy corta temporalmente el WebSocket
+    const syncTimer = setInterval(() => {
+      if (!mobileMode) fetchInitialData();
+    }, 6000);
+
     return () => {
       closedByUser = true;
       clearTimeout(reconnectTimer);
       clearInterval(pingTimer);
+      clearInterval(syncTimer);
       if (ws) ws.close();
     };
-  }, [token, fetchInitialData]);
+  }, [token, mobileMode, fetchInitialData]);
 
   if (!token || !user) {
     return <LoginPage />;
@@ -153,11 +166,13 @@ export default function App() {
     return (
       <MobileAppView
         casetas={casetas}
+        pasos={pasos}
         wsConnected={wsConnected}
         onRefresh={fetchInitialData}
         onExitMobile={() => {
           window.history.replaceState({}, "", "/");
           setMobileMode(false);
+          fetchInitialData();
         }}
       />
     );
@@ -257,7 +272,7 @@ export default function App() {
           <CamaraCasetaPage casetas={casetas} onRefresh={fetchInitialData} />
         )}
         {activeTab === "vehiculos" && <VehiculosPage onRefreshGlobal={fetchInitialData} />}
-        {activeTab === "pasos" && <PasosPage onSelectImage={setModalImage} />}
+        {activeTab === "pasos" && <PasosPage livePasos={pasos} onSelectImage={setModalImage} />}
         {activeTab === "alertas" && (
           <AlertasPage alertas={alertas} onRefresh={fetchInitialData} onSelectImage={setModalImage} />
         )}

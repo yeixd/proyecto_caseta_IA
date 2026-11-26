@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Image,
   ScrollView,
   StyleSheet,
   Text,
@@ -8,7 +9,8 @@ import {
   View
 } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
-import { fetchCasetas, sendCasetaFrame } from "../api";
+import * as ImagePicker from "expo-image-picker";
+import { fetchCasetas, formatVehicleClass, sendCasetaFrame } from "../api";
 
 const FPS_OPTIONS = [
   { label: "2 FPS", ms: 500 },
@@ -57,6 +59,31 @@ export default function CasetaScreen({ token }) {
       });
       if (!photo?.uri) return;
       const data = await sendCasetaFrame(token, photo.uri, casetaId);
+      setLastResult(data);
+      if (data?.paso) {
+        setHistory((prev) => [data.paso, ...prev].slice(0, 6));
+      }
+      setFramesSent((n) => n + 1);
+    } catch (err) {
+      setErrorMsg(err.message);
+    } finally {
+      inFlightRef.current = false;
+      setSending(false);
+    }
+  }
+
+  async function pickGalleryAndSend() {
+    if (inFlightRef.current) return;
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) return;
+    const result = await ImagePicker.launchImageLibraryAsync({ quality: 0.72 });
+    if (result.canceled || !result.assets?.[0]?.uri) return;
+
+    inFlightRef.current = true;
+    setSending(true);
+    setErrorMsg("");
+    try {
+      const data = await sendCasetaFrame(token, result.assets[0].uri, casetaId);
       setLastResult(data);
       if (data?.paso) {
         setHistory((prev) => [data.paso, ...prev].slice(0, 6));
@@ -228,12 +255,42 @@ export default function CasetaScreen({ token }) {
           >
             <Text style={styles.secondaryBtnText}>1 Foto</Text>
           </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.secondaryBtn}
+            disabled={sending}
+            onPress={pickGalleryAndSend}
+          >
+            <Text style={styles.secondaryBtnText}>Galería</Text>
+          </TouchableOpacity>
         </View>
 
         {errorMsg ? <Text style={styles.errorText}>{errorMsg}</Text> : null}
 
         {paso && (
           <View style={styles.resultCard}>
+            <Text style={{ color: "#34d399", fontSize: 11, fontWeight: "700", marginBottom: 8 }}>
+              ✓ Registro #{paso.id} enviado en tiempo real a la Página Web
+            </Text>
+
+            {paso.imagen_url && lastResult?.baseUrl ? (
+              <Image
+                source={{
+                  uri: paso.imagen_url.startsWith("http")
+                    ? paso.imagen_url
+                    : `${lastResult.baseUrl}${paso.imagen_url}`
+                }}
+                style={{
+                  width: "100%",
+                  height: 175,
+                  borderRadius: 10,
+                  marginBottom: 10,
+                  backgroundColor: "#020617"
+                }}
+                resizeMode="contain"
+              />
+            ) : null}
+
             <View style={styles.resultHeader}>
               <Text style={styles.plateText}>{paso.placa_normalizada || "ILEGIBLE"}</Text>
               <Text
@@ -247,8 +304,13 @@ export default function CasetaScreen({ token }) {
             </View>
 
             <View style={styles.metricsGrid}>
-              <Metric label="Categoría (M2)" value={paso.categoria_detectada} />
-              <Metric label="Ejes (M3)" value={`${paso.ejes_detectados} ejes`} />
+              <Metric label="Clase (M2)" value={formatVehicleClass(paso.categoria_detectada)} />
+              <Metric
+                label="Ejes / Llantas (M3)"
+                value={`${paso.ejes_detectados} ejes${
+                  paso.llantas_visibles !== undefined ? ` (${paso.llantas_visibles} llantas)` : ""
+                }`}
+              />
               <Metric label="Pasajeros (M4)" value={String(paso.pasajeros)} />
               <Metric label="Tarifa" value={`Bs. ${Number(paso.monto).toFixed(2)}`} />
             </View>

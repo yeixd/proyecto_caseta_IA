@@ -3,6 +3,8 @@ import {
   Bot,
   Camera,
   CheckCircle2,
+  ExternalLink,
+  Image as ImageIcon,
   LogOut,
   Monitor,
   Pause,
@@ -10,11 +12,18 @@ import {
   RefreshCw,
   Send,
   Smartphone,
+  Timer,
   Video,
   VideoOff,
   X
 } from "lucide-react";
-import { api, formatVehicleClass, VEHICLE_CLASS_COLORS } from "../api";
+import {
+  api,
+  compressImageForUpload,
+  formatVehicleClass,
+  resolveImageUrl,
+  VEHICLE_CLASS_COLORS
+} from "../api";
 import { useAuth } from "../context/AuthContext";
 
 const FPS_OPTIONS = [
@@ -31,7 +40,13 @@ const STATE_BADGE = {
   "Placa ilegible": "bg-amber-500/20 text-amber-300 border-amber-500/40"
 };
 
-export default function MobileAppView({ casetas, wsConnected, onExitMobile, onRefresh }) {
+export default function MobileAppView({
+  casetas,
+  pasos = [],
+  wsConnected,
+  onExitMobile,
+  onRefresh
+}) {
   const { user, logout } = useAuth();
   const [tab, setTab] = useState("caseta");
 
@@ -53,7 +68,9 @@ export default function MobileAppView({ casetas, wsConnected, onExitMobile, onRe
                   wsConnected ? "bg-emerald-400 animate-pulse" : "bg-amber-400"
                 }`}
               />
-              <span className="truncate">{user?.email_google}</span>
+              <span className="truncate">
+                {wsConnected ? "Sincronizado con Web" : "Conectando..."} · {user?.email_google}
+              </span>
             </div>
           </div>
         </div>
@@ -62,9 +79,10 @@ export default function MobileAppView({ casetas, wsConnected, onExitMobile, onRe
           <button
             onClick={onExitMobile}
             title="Ir al Panel Web completo"
-            className="p-2 rounded-xl bg-slate-800 text-slate-300 hover:text-white"
+            className="px-2.5 py-2 rounded-xl bg-sky-500/15 border border-sky-500/30 text-sky-300 hover:text-white text-[11px] font-semibold flex items-center gap-1"
           >
-            <Monitor className="w-4 h-4" />
+            <Monitor className="w-3.5 h-3.5" />
+            Web
           </button>
           <button
             onClick={logout}
@@ -79,9 +97,14 @@ export default function MobileAppView({ casetas, wsConnected, onExitMobile, onRe
       {/* Contenido principal */}
       <div className="flex-1 overflow-y-auto pb-20">
         {tab === "caseta" ? (
-          <MobileCasetaTab casetas={casetas} onRefresh={onRefresh} />
+          <MobileCasetaTab
+            casetas={casetas}
+            pasos={pasos}
+            onRefresh={onRefresh}
+            onExitMobile={onExitMobile}
+          />
         ) : (
-          <MobileConsultaTab />
+          <MobileConsultaTab casetas={casetas} onRefresh={onRefresh} />
         )}
       </div>
 
@@ -114,12 +137,13 @@ export default function MobileAppView({ casetas, wsConnected, onExitMobile, onRe
   );
 }
 
-function MobileCasetaTab({ casetas, onRefresh }) {
+function MobileCasetaTab({ casetas, pasos = [], onRefresh, onExitMobile }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
   const inFlightRef = useRef(false);
   const nativeCamRef = useRef(null);
+  const galleryRef = useRef(null);
 
   const [cameraOn, setCameraOn] = useState(false);
   const [facing, setFacing] = useState("environment");
@@ -132,6 +156,7 @@ function MobileCasetaTab({ casetas, onRefresh }) {
   }, [casetas, casetaId]);
   const [fpsIdx, setFpsIdx] = useState(0);
   const [streaming, setStreaming] = useState(false);
+  const [bursting, setBursting] = useState(false);
   const [sending, setSending] = useState(false);
   const [framesSent, setFramesSent] = useState(0);
   const [lastResult, setLastResult] = useState(null);
@@ -176,14 +201,16 @@ function MobileCasetaTab({ casetas, onRefresh }) {
 
   useEffect(() => () => stopCamera(), []);
 
-  async function uploadFrameBlob(blob, filename = "frame.jpg") {
+  async function uploadFrameBlob(blobOrFile, filename = "frame_movil.jpg") {
     inFlightRef.current = true;
     setSending(true);
     setError("");
     try {
+      const optimized = await compressImageForUpload(blobOrFile, 1280, 0.82);
       const fd = new FormData();
-      fd.append("file", blob, filename);
+      fd.append("file", optimized, filename.replace(/\.[^.]+$/, ".jpg"));
       fd.append("caseta_id", String(casetaId || casetas[0]?.id || 1));
+      fd.append("origen", "movil");
       const { data } = await api.post("/api/v1/pasos/frame", fd);
       setLastResult(data);
       setFramesSent((n) => n + 1);
@@ -191,7 +218,7 @@ function MobileCasetaTab({ casetas, onRefresh }) {
     } catch (err) {
       setError(
         err?.response?.data?.detail ||
-          "Error conectando con el backend o endpoint de inferencia (INFERENCE_URL)."
+          "Error conectando con el backend o endpoint de inferencia (verifica INFERENCE_URL en Estado)."
       );
     } finally {
       inFlightRef.current = false;
@@ -207,15 +234,26 @@ function MobileCasetaTab({ casetas, onRefresh }) {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-    const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.72));
+    const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.78));
     if (blob) await uploadFrameBlob(blob, `mobile_${Date.now()}.jpg`);
+  }
+
+  function startClipBurst() {
+    if (!cameraOn || streaming || bursting) return;
+    setBursting(true);
+    setStreaming(true);
+    setTimeout(() => {
+      setStreaming(false);
+      setBursting(false);
+    }, 5000);
   }
 
   async function handleNativePhoto(e) {
     const file = e.target.files?.[0];
     if (!file) return;
-    await uploadFrameBlob(file, file.name || "camara_movil.jpg");
+    await uploadFrameBlob(file, file.name || `camara_movil_${Date.now()}.jpg`);
     if (nativeCamRef.current) nativeCamRef.current.value = "";
+    if (galleryRef.current) galleryRef.current.value = "";
   }
 
   useEffect(() => {
@@ -318,43 +356,76 @@ function MobileCasetaTab({ casetas, onRefresh }) {
         </div>
       </div>
 
-      {/* Botones de captura */}
-      <div className="grid grid-cols-2 gap-2">
+      {/* Botones de captura de video */}
+      <div className="grid grid-cols-3 gap-2">
         <button
           disabled={!cameraOn}
-          onClick={() => setStreaming((s) => !s)}
+          onClick={() => {
+            setBursting(false);
+            setStreaming((s) => !s);
+          }}
           className={`py-3 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition disabled:opacity-40 ${
             streaming ? "bg-red-500 text-white" : "bg-sky-500 text-slate-950"
           }`}
         >
           {streaming ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-          {streaming ? "Detener Video" : "Iniciar Caseta"}
+          {streaming ? "Detener" : "En Vivo"}
+        </button>
+
+        <button
+          disabled={!cameraOn || streaming || sending}
+          onClick={startClipBurst}
+          className="btn-secondary text-xs py-3 flex items-center justify-center gap-1"
+        >
+          <Timer className="w-4 h-4 text-sky-400" />
+          Clip 5s
         </button>
 
         <button
           disabled={!cameraOn || sending}
           onClick={captureFromVideo}
-          className="btn-secondary text-xs py-3 flex items-center justify-center gap-1.5"
+          className="btn-secondary text-xs py-3 flex items-center justify-center gap-1"
         >
           <Video className="w-4 h-4" />
-          {sending ? "Analizando..." : "1 Frame"}
+          {sending ? "Enviando..." : "1 Frame"}
         </button>
       </div>
 
-      {/* Botón cámara nativa del celular (funciona siempre) */}
-      <label className="w-full btn-secondary py-3 text-xs flex items-center justify-center gap-2 cursor-pointer border-sky-500/30 text-sky-300">
-        <Camera className="w-4 h-4" />
-        Tomar Foto con Cámara Nativa del Celular
-        <input
-          ref={nativeCamRef}
-          type="file"
-          accept="image/*"
-          capture="environment"
-          className="hidden"
-          disabled={sending}
-          onChange={handleNativePhoto}
-        />
-      </label>
+      {/* Captura con Cámara Nativa o Galería del Celular (envía directo al Panel Web) */}
+      <div className="grid grid-cols-2 gap-2">
+        <label className="btn-primary py-3 text-xs flex items-center justify-center gap-1.5 cursor-pointer text-center">
+          <Camera className="w-4 h-4 shrink-0" />
+          <span>{sending ? "Procesando..." : "Cámara Celular"}</span>
+          <input
+            ref={nativeCamRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            disabled={sending}
+            onChange={handleNativePhoto}
+          />
+        </label>
+
+        <label className="btn-secondary py-3 text-xs flex items-center justify-center gap-1.5 cursor-pointer border-sky-500/30 text-sky-300 text-center">
+          <ImageIcon className="w-4 h-4 shrink-0" />
+          <span>{sending ? "Procesando..." : "Subir de Galería"}</span>
+          <input
+            ref={galleryRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            disabled={sending}
+            onChange={handleNativePhoto}
+          />
+        </label>
+      </div>
+
+      {sending && (
+        <div className="bg-sky-500/15 border border-sky-500/40 rounded-xl p-3 text-xs text-sky-200 animate-pulse text-center">
+          Analizando vehículo, llantas, ejes, pasajeros y placa... enviando registro al Panel Web.
+        </div>
+      )}
 
       {error && (
         <div className="bg-red-500/15 border border-red-500/40 rounded-xl p-3 text-xs text-red-200">
@@ -362,9 +433,30 @@ function MobileCasetaTab({ casetas, onRefresh }) {
         </div>
       )}
 
-      {/* Resultado en vivo */}
+      {/* Resultado en vivo + Evidencia anotada enviada al Panel Web */}
       {paso && (
-        <div className="card p-4 space-y-3 border-sky-500/30">
+        <div className="card p-4 space-y-3 border-emerald-500/40">
+          <div className="bg-emerald-500/15 border border-emerald-500/30 rounded-xl px-3 py-2 flex items-center justify-between gap-2">
+            <span className="text-[11px] font-semibold text-emerald-300 flex items-center gap-1.5">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              Registro #{paso.id} enviado a la Página Web
+            </span>
+            <button
+              onClick={onExitMobile}
+              className="text-[11px] font-bold text-sky-300 hover:text-white flex items-center gap-1 shrink-0"
+            >
+              Ver en Web <ExternalLink className="w-3 h-3" />
+            </button>
+          </div>
+
+          {paso.imagen_url && (
+            <img
+              src={resolveImageUrl(paso.imagen_url)}
+              alt={paso.placa_normalizada || "Evidencia anotada"}
+              className="w-full rounded-xl border border-slate-700 bg-slate-950 object-contain max-h-56"
+            />
+          )}
+
           <div className="flex items-center justify-between">
             <span className="font-mono text-2xl font-black text-white tracking-wider">
               {paso.placa_normalizada || "ILEGIBLE"}
@@ -395,8 +487,11 @@ function MobileCasetaTab({ casetas, onRefresh }) {
               <span className="text-slate-400 block">Ejes / Llantas (M3)</span>
               <strong className="text-white text-sm">
                 {paso.ejes_detectados} ejes
-                {lastResult?.inferencia?.vehiculo?.llantas_visibles !== undefined
-                  ? ` (${lastResult.inferencia.vehiculo.llantas_visibles} llantas)`
+                {(paso.llantas_visibles ?? lastResult?.inferencia?.vehiculo?.llantas_visibles) !==
+                undefined
+                  ? ` (${
+                      paso.llantas_visibles ?? lastResult.inferencia.vehiculo.llantas_visibles
+                    } llantas)`
                   : ""}
               </strong>
             </div>
@@ -413,10 +508,54 @@ function MobileCasetaTab({ casetas, onRefresh }) {
           </div>
 
           <div className="flex items-center justify-between text-[11px] text-slate-400">
-            <span className="flex items-center gap-1 text-emerald-400">
-              <CheckCircle2 className="w-3.5 h-3.5" /> Enviado al Panel Web en vivo
-            </span>
+            <span>{paso.caseta_nombre || `Caseta #${paso.caseta_id}`}</span>
             <span>{Math.round(paso.latencia_ms)} ms</span>
+          </div>
+        </div>
+      )}
+
+      {/* Historial sincronizado con la Página Web */}
+      {pasos.length > 0 && (
+        <div className="card p-3.5 space-y-2.5">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-bold text-slate-200">
+              Últimos registros en la Página Web ({pasos.length})
+            </h3>
+            <button onClick={onRefresh} className="text-[11px] text-sky-400 flex items-center gap-1">
+              <RefreshCw className="w-3 h-3" /> Sincronizar
+            </button>
+          </div>
+          <div className="space-y-2 max-h-56 overflow-y-auto pr-0.5">
+            {pasos.slice(0, 6).map((p) => (
+              <div
+                key={p.id}
+                className="bg-slate-950/90 border border-slate-800 rounded-xl p-2 flex items-center gap-2.5 text-xs"
+              >
+                {p.imagen_url && p.tiene_evidencia !== false ? (
+                  <img
+                    src={resolveImageUrl(p.imagen_url)}
+                    alt={p.placa_normalizada}
+                    className="w-14 h-10 rounded-lg object-cover border border-slate-700 shrink-0"
+                  />
+                ) : (
+                  <div className="w-14 h-10 rounded-lg bg-slate-900 border border-slate-800 shrink-0" />
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="font-mono font-bold text-white truncate">
+                      {p.placa_normalizada || "ILEGIBLE"}
+                    </span>
+                    <span className="text-[10px] text-emerald-300 font-semibold shrink-0">
+                      Bs. {Number(p.monto).toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-slate-400 truncate">
+                    {formatVehicleClass(p.categoria_detectada)} · {p.ejes_detectados} ejes ·{" "}
+                    {p.pasajeros} pasaj.
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -424,7 +563,7 @@ function MobileCasetaTab({ casetas, onRefresh }) {
   );
 }
 
-function MobileConsultaTab() {
+function MobileConsultaTab({ casetas = [], onRefresh }) {
   const [messages, setMessages] = useState([
     {
       role: "assistant",
@@ -438,6 +577,57 @@ function MobileConsultaTab() {
   const [preview, setPreview] = useState("");
   const [sending, setSending] = useState(false);
   const fileRef = useRef(null);
+
+  async function sendAsPasoToWeb() {
+    if (!file || sending) return;
+    const curFile = file;
+    const curPreview = preview;
+    setFile(null);
+    setPreview("");
+    if (fileRef.current) fileRef.current.value = "";
+    setSending(true);
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", text: "Registrar paso de vehículo en Panel Web", image: curPreview || null }
+    ]);
+    try {
+      const optimized = await compressImageForUpload(curFile, 1280, 0.82);
+      const fd = new FormData();
+      fd.append("file", optimized, `consulta_paso_${Date.now()}.jpg`);
+      fd.append("caseta_id", String(casetas[0]?.id || 1));
+      fd.append("origen", "movil");
+      const { data } = await api.post("/api/v1/pasos/frame", fd);
+      const p = data.paso;
+      onRefresh?.();
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text: `✓ Registro #${p.id} enviado al Panel Web:\n• Placa: ${
+            p.placa_normalizada || "ILEGIBLE"
+          }\n• Clase: ${formatVehicleClass(p.categoria_detectada)}\n• Ejes: ${
+            p.ejes_detectados
+          }${p.llantas_visibles !== undefined ? ` (${p.llantas_visibles} llantas)` : ""}\n• Pasajeros: ${
+            p.pasajeros
+          }\n• Tarifa: Bs. ${Number(p.monto).toFixed(2)} (${p.estado})`,
+          estado: null,
+          sugerencias: []
+        }
+      ]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text: err?.response?.data?.detail || "Error registrando paso en el Panel Web.",
+          estado: null,
+          sugerencias: []
+        }
+      ]);
+    } finally {
+      setSending(false);
+    }
+  }
 
   async function send(customText) {
     const msgText = typeof customText === "string" ? customText : input.trim();
@@ -457,7 +647,10 @@ function MobileConsultaTab() {
     try {
       const fd = new FormData();
       if (msgText) fd.append("mensaje", msgText);
-      if (curFile) fd.append("file", curFile);
+      if (curFile) {
+        const optimized = await compressImageForUpload(curFile, 1280, 0.82);
+        fd.append("file", optimized, "placa_movil.jpg");
+      }
       const { data } = await api.post("/api/v1/agente/chat", fd);
       setMessages((prev) => [
         ...prev,
@@ -527,16 +720,26 @@ function MobileConsultaTab() {
 
       <div className="card p-2.5 space-y-2">
         {preview && (
-          <div className="relative inline-block">
-            <img src={preview} alt="Preview" className="h-16 rounded-lg" />
+          <div className="flex items-center justify-between gap-2">
+            <div className="relative inline-block">
+              <img src={preview} alt="Preview" className="h-16 rounded-lg" />
+              <button
+                onClick={() => {
+                  setFile(null);
+                  setPreview("");
+                }}
+                className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-0.5"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
             <button
-              onClick={() => {
-                setFile(null);
-                setPreview("");
-              }}
-              className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-0.5"
+              type="button"
+              disabled={sending}
+              onClick={sendAsPasoToWeb}
+              className="btn-primary text-[11px] py-2 px-3"
             >
-              <X className="w-3 h-3" />
+              Registrar Paso en Web
             </button>
           </div>
         )}
