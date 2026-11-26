@@ -20,6 +20,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
     UniqueConstraint,
 )
@@ -122,4 +123,15 @@ class Configuracion(Base):
 
     clave = Column(String(80), primary_key=True, index=True)
     valor = Column(String(500), nullable=False, default="")
+
+
+class EvidenciaImagen(Base):
+    """Almacenamiento persistente de imágenes de evidencia en PostgreSQL (sobrevive reinicios de Render)."""
+
+    __tablename__ = "evidencias_imagenes"
+
+    filename = Column(String(200), primary_key=True, index=True)
+    content_type = Column(String(80), nullable=False, default="image/jpeg")
+    data = Column(LargeBinary, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
 

@@ -119,6 +119,11 @@ def test_four_agent_states_and_frame_flow():
     assert body_rf["paso"]["monto"] == 5.0
     assert body_rf["alerta"] is None
 
+    # Verificar que la imagen de evidencia se sirve desde la base de datos (persistente en Render)
+    img_resp = client.get(body_rf["paso"]["imagen_url"])
+    assert img_resp.status_code == 200
+    assert img_resp.headers["content-type"].startswith("image/jpeg")
+
     # 2. Registrada y con paso
     r2 = client.post("/api/v1/agente/chat", headers=headers, data={"mensaje": "2481KLM"})
     assert r2.status_code == 200

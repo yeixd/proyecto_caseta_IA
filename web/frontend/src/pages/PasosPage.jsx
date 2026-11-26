@@ -87,7 +87,10 @@ export default function PasosPage({ onSelectImage }) {
                       src={resolveImageUrl(p.imagen_url)}
                       alt={p.placa_normalizada}
                       onClick={() => onSelectImage(resolveImageUrl(p.imagen_url))}
-                      className="w-20 h-14 object-cover rounded-lg border border-slate-700 cursor-pointer hover:scale-105 transition"
+                      onError={(e) => {
+                        e.currentTarget.style.display = "none";
+                      }}
+                      className="w-20 h-14 object-cover rounded-lg border border-slate-700 cursor-pointer hover:scale-105 transition bg-slate-900"
                     />
                   ) : (
                     <span className="text-xs text-slate-500 flex items-center gap-1">

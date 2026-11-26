@@ -180,7 +180,10 @@ export default function DashboardPage({
                       src={resolveImageUrl(p.imagen_url)}
                       alt={p.placa_normalizada}
                       onClick={() => onSelectImage(resolveImageUrl(p.imagen_url))}
-                      className="w-28 h-20 object-cover rounded-lg border border-slate-700 cursor-pointer hover:opacity-90 shrink-0"
+                      onError={(e) => {
+                        e.currentTarget.style.display = "none";
+                      }}
+                      className="w-28 h-20 object-cover rounded-lg border border-slate-700 cursor-pointer hover:opacity-90 shrink-0 bg-slate-900"
                     />
                   ) : (
                     <div className="w-28 h-20 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center text-xs text-slate-500 shrink-0">

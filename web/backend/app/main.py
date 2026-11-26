@@ -38,7 +38,7 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -59,7 +59,7 @@ from app.auth import (
 from app.config import get_settings
 from app.database import Base, SessionLocal, engine, get_db
 from app.inference_client import inference_client
-from app.models import Alerta, Caseta, Configuracion, Paso, Tarifa, Usuario, Vehiculo
+from app.models import Alerta, Caseta, Configuracion, EvidenciaImagen, Paso, Tarifa, Usuario, Vehiculo
 from app.plate_utils import lookup_plate_status, normalize_plate
 from app.realtime import realtime_manager
 from app.schemas import (
@@ -114,11 +114,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount(
-    "/static/evidencias",
-    StaticFiles(directory=settings.evidence_dir),
-    name="evidencias",
-)
+
+@app.get("/static/evidencias/{filename}", include_in_schema=False)
+def obtener_imagen_evidencia(filename: str, db: Session = Depends(get_db)):
+    """Sirve imágenes de evidencia desde PostgreSQL (persistente) o disco local."""
+    safe_name = os.path.basename(filename)
+    row = db.query(EvidenciaImagen).filter(EvidenciaImagen.filename == safe_name).first()
+    if row and row.data:
+        return Response(
+            content=row.data,
+            media_type=row.content_type or "image/jpeg",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+    disk_path = os.path.join(settings.evidence_dir, safe_name)
+    if os.path.isfile(disk_path):
+        return FileResponse(disk_path, media_type="image/jpeg")
+    raise HTTPException(status_code=404, detail="Imagen de evidencia no encontrada")
 
 
 @app.on_event("startup")
@@ -147,18 +158,27 @@ def on_startup():
 # ----------------------------------------------------------------------
 # Helpers internos
 # ----------------------------------------------------------------------
-def _save_evidence_image(annotated_b64: str, fallback_raw: bytes) -> str:
+def _save_evidence_image(db: Session, annotated_b64: str, fallback_raw: bytes) -> str:
     filename = f"paso_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
-    dest = os.path.join(settings.evidence_dir, filename)
     raw = fallback_raw
     if annotated_b64:
         try:
             raw = base64.b64decode(annotated_b64)
         except Exception:
             raw = fallback_raw
-    with open(dest, "wb") as f:
-        f.write(raw)
-    return f"{settings.evidence_public_base_url}/{filename}"
+
+    # 1. Guardar en PostgreSQL (persistente aunque Render reinicie o redespliegue)
+    db.add(EvidenciaImagen(filename=filename, content_type="image/jpeg", data=raw))
+
+    # 2. Guardar copia en disco local como caché opcional
+    try:
+        dest = os.path.join(settings.evidence_dir, filename)
+        with open(dest, "wb") as f:
+            f.write(raw)
+    except OSError:
+        pass
+
+    return f"/static/evidencias/{filename}"
 
 
 def _resolve_tariff(db: Session, categoria: str, ejes: int) -> float:
@@ -307,7 +327,7 @@ async def registrar_paso_frame(
     pasajeros = max(0, int(infer_data.get("pasajeros") or 0))
     annotated_b64 = str(infer_data.get("imagen_anotada_b64") or "")
 
-    imagen_url = _save_evidence_image(annotated_b64, image_bytes)
+    imagen_url = _save_evidence_image(db, annotated_b64, image_bytes)
     tarifa_monto = _resolve_tariff(db, categoria, ejes)
 
     alerta_creada: Optional[Alerta] = None
