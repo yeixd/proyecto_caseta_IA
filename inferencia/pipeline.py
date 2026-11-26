@@ -618,8 +618,7 @@ class TollInferencePipeline:
 
     # ------------------------------------------------------------------
     # M4 (Bonificación +5): Segmentación y conteo de pasajeros visibles
-    # Con zoom sobre cabina/parabrisas y filtro estricto dentro del vehículo
-    # (no cuenta peatones ni policías fuera del vehículo).
+    # EXCLUSIVAMENTE DENTRO DEL VEHÍCULO (rechaza transeúntes/peatones afuera).
     # Privacidad: SOLO máscara y conteo, SIN reconocimiento facial ni recortes.
     # ------------------------------------------------------------------
     def _infer_passengers_seg(
@@ -627,21 +626,69 @@ class TollInferencePipeline:
         image_bgr: np.ndarray,
         vehicle_bbox: Optional[List[int]],
         vehicle_poly: Optional[np.ndarray],
+        categoria: str = "auto",
     ) -> Tuple[int, List[np.ndarray]]:
-        if self.m4_passengers_seg is None:
+        # Sin vehículo detectado NO se cuentan personas (evita contar transeúntes en la calle)
+        if self.m4_passengers_seg is None or vehicle_bbox is None:
             return 0, []
+
+        vx1, vy1, vx2, vy2 = vehicle_bbox
+        bw = max(vx2 - vx1, 1)
+        bh = max(vy2 - vy1, 1)
+
+        # Zona de cabina/ventanas estrictamente interior al vehículo:
+        # En vehículos cerrados (auto, minibus, bus, camion), los pasajeros sentados
+        # se ubican en la zona superior/media (ventanas y parabrisas), nunca con pies en el suelo.
+        if categoria == "moto":
+            cabin_x1 = vx1 + int(bw * 0.05)
+            cabin_x2 = vx2 - int(bw * 0.05)
+            cabin_y1 = max(0, vy1 - int(bh * 0.25))
+            cabin_y2 = vy2
+        else:
+            cabin_x1 = vx1 + int(bw * 0.07)
+            cabin_x2 = vx2 - int(bw * 0.07)
+            cabin_y1 = vy1 + int(bh * 0.04)
+            cabin_y2 = vy1 + int(bh * 0.68)
 
         passenger_masks: List[np.ndarray] = []
         centers_seen: List[Tuple[float, float]] = []
 
-        def _is_inside_vehicle(cx: float, cy: float) -> bool:
-            if vehicle_poly is not None and len(vehicle_poly) >= 3:
-                return cv2.pointPolygonTest(vehicle_poly, (float(cx), float(cy)), False) >= -8.0
-            if vehicle_bbox is not None:
-                vx1, vy1, vx2, vy2 = vehicle_bbox
-                # Margen interno pequeño: excluye personas de pie a los costados del vehículo
-                inset_x = (vx2 - vx1) * 0.04
-                return (vx1 + inset_x) <= cx <= (vx2 - inset_x) and vy1 <= cy <= vy2
+        def _is_passenger_inside_cabin(gx1: int, gy1: int, gx2: int, gy2: int) -> bool:
+            pw = max(gx2 - gx1, 1)
+            ph = max(gy2 - gy1, 1)
+            cx = (gx1 + gx2) / 2.0
+            cy = (gy1 + gy2) / 2.0
+
+            # 1. Para vehículos cerrados, rechazar transeúntes de cuerpo completo parados en la calle
+            if categoria != "moto":
+                # Si los pies/base de la persona llegan a la zona de ruedas/suelo, es un transeúnte
+                if gy2 > vy1 + bh * 0.76:
+                    return False
+                # Si la persona es casi tan alta como todo el vehículo, está parada afuera
+                if ph > bh * 0.60:
+                    return False
+                # Si la cabeza sobresale por encima del techo del vehículo, está parada atrás/adelante
+                if gy1 < vy1 - bh * 0.03:
+                    return False
+
+            # 2. Centro estrictamente dentro de la máscara del vehículo (si existe máscara M2)
+            if categoria != "moto" and vehicle_poly is not None and len(vehicle_poly) >= 3:
+                if cv2.pointPolygonTest(vehicle_poly, (float(cx), float(cy)), False) < 0.0:
+                    return False
+
+            # 3. Al menos 70% del área de la persona debe estar DENTRO de la zona de cabina interior
+            ix1 = max(gx1, cabin_x1)
+            iy1 = max(gy1, cabin_y1)
+            ix2 = min(gx2, cabin_x2)
+            iy2 = min(gy2, cabin_y2)
+            inter_w = max(0, ix2 - ix1)
+            inter_h = max(0, iy2 - iy1)
+            inter_area = float(inter_w * inter_h)
+            person_area = float(pw * ph)
+            overlap_ratio = inter_area / max(person_area, 1.0)
+            if overlap_ratio < 0.70:
+                return False
+
             return True
 
         def _collect_from_preds(preds, offset_x: int = 0, offset_y: int = 0):
@@ -658,10 +705,9 @@ class TollInferencePipeline:
                 gx1, gy1, gx2, gy2 = px1 + offset_x, py1 + offset_y, px2 + offset_x, py2 + offset_y
                 cx, cy = (gx1 + gx2) / 2.0, (gy1 + gy2) / 2.0
 
-                if not _is_inside_vehicle(cx, cy):
+                if not _is_passenger_inside_cabin(gx1, gy1, gx2, gy2):
                     continue
 
-                # Evitar duplicados entre pasada global y pasada con zoom en cabina
                 if any(math.hypot(cx - ox, cy - oy) < 28.0 for ox, oy in centers_seen):
                     continue
                 centers_seen.append((cx, cy))
@@ -677,22 +723,23 @@ class TollInferencePipeline:
                     )
                     passenger_masks.append(rect_poly)
 
-        # Pasada 1: imagen completa
+        # Pasada 1: zoom estricto sobre la cabina/parabrisas del vehículo (maximiza precisión interior)
+        crop_y1 = max(0, cabin_y1)
+        crop_y2 = min(image_bgr.shape[0], cabin_y2)
+        crop_x1 = max(0, cabin_x1)
+        crop_x2 = min(image_bgr.shape[1], cabin_x2)
+        cabin_crop = image_bgr[crop_y1:crop_y2, crop_x1:crop_x2]
+        if cabin_crop.size > 0 and cabin_crop.shape[1] >= 40 and cabin_crop.shape[0] >= 40:
+            preds_cabin = self.m4_passengers_seg.predict(
+                source=cabin_crop, conf=0.25, device=self.device, verbose=False
+            )
+            _collect_from_preds(preds_cabin, crop_x1, crop_y1)
+
+        # Pasada 2: imagen completa filtrada estrictamente por cabina interior
         preds_full = self.m4_passengers_seg.predict(
-            source=image_bgr, conf=0.25, device=self.device, verbose=False
+            source=image_bgr, conf=0.30, device=self.device, verbose=False
         )
         _collect_from_preds(preds_full, 0, 0)
-
-        # Pasada 2: zoom en cabina / parabrisas (65% superior del vehículo) para pasajeros detrás del vidrio
-        if vehicle_bbox is not None:
-            vx1, vy1, vx2, vy2 = vehicle_bbox
-            cabin_y2 = vy1 + int((vy2 - vy1) * 0.68)
-            cabin_crop = image_bgr[vy1:cabin_y2, vx1:vx2]
-            if cabin_crop.size > 0 and cabin_crop.shape[1] >= 40 and cabin_crop.shape[0] >= 40:
-                preds_cabin = self.m4_passengers_seg.predict(
-                    source=cabin_crop, conf=0.22, device=self.device, verbose=False
-                )
-                _collect_from_preds(preds_cabin, vx1, vy1)
 
         return len(passenger_masks), passenger_masks
 
@@ -804,9 +851,12 @@ class TollInferencePipeline:
             vehicle_bbox=vehicle_bbox,
         )
 
-        # M4 (Bonus +5): Conteo de pasajeros dentro del vehículo
+        # M4 (Bonus +5): Conteo de pasajeros estrictamente dentro del vehículo
         pasajeros, passenger_masks = self._infer_passengers_seg(
-            image_bgr, vehicle_bbox=vehicle_bbox, vehicle_poly=vehicle_poly
+            image_bgr,
+            vehicle_bbox=vehicle_bbox,
+            vehicle_poly=vehicle_poly,
+            categoria=vehiculo_info["categoria"],
         )
 
         annotated_b64 = ""

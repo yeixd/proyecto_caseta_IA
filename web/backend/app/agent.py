@@ -19,6 +19,7 @@ Características obligatorias:
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import logging
 from typing import Any, Dict, Optional
@@ -28,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.inference_client import inference_client
+from app.models import Alerta, Caseta, Paso, Vehiculo
 from app.plate_utils import extract_plate_candidate_from_text, lookup_plate_status
 
 logger = logging.getLogger("peaje.agent")
@@ -164,7 +166,8 @@ async def _try_ollama_response(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=settings.ollama_timeout_seconds) as client:
+        timeout_sec = max(float(settings.ollama_timeout_seconds), 45.0)
+        async with httpx.AsyncClient(timeout=timeout_sec) as client:
             resp = await client.post(f"{ollama_url}/api/chat", json=payload)
             # Si el modelo configurado no existe en Ollama, usar automáticamente el primero disponible
             if resp.status_code == 404:
@@ -183,6 +186,39 @@ async def _try_ollama_response(
     except Exception as exc:
         logger.warning("Ollama no disponible en %s (%s); usando motor determinista.", ollama_url, exc)
     return None
+
+
+def _get_general_db_snapshot(db: Session) -> Dict[str, Any]:
+    """Obtiene un resumen real de la BD para preguntas conversacionales generales al LLM."""
+    start_of_day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    pasos_hoy = db.query(Paso).filter(Paso.created_at >= start_of_day).all()
+    ultimos = db.query(Paso).order_by(Paso.created_at.desc()).limit(5).all()
+    alertas_pend = db.query(Alerta).filter(Alerta.atendida == False).count()  # noqa: E712
+    total_vehiculos = db.query(Vehiculo).count()
+    casetas = [c.nombre for c in db.query(Caseta).all()]
+
+    return {
+        "tipo_consulta": "resumen_general_sistema",
+        "fecha_utc": start_of_day.date().isoformat(),
+        "total_vehiculos_registrados": total_vehiculos,
+        "casetas": casetas,
+        "pasos_hoy": len(pasos_hoy),
+        "recaudacion_hoy_bs": round(sum(p.monto for p in pasos_hoy if p.estado == "APROBADO"), 2),
+        "pasajeros_hoy": sum(p.pasajeros for p in pasos_hoy),
+        "alertas_pendientes": alertas_pend,
+        "ultimos_5_pasos": [
+            {
+                "placa": p.placa_normalizada,
+                "categoria": p.categoria_detectada,
+                "ejes": p.ejes_detectados,
+                "pasajeros": p.pasajeros,
+                "monto_bs": p.monto,
+                "estado": p.estado,
+                "fecha": p.created_at.isoformat() if p.created_at else None,
+            }
+            for p in ultimos
+        ],
+    }
 
 
 async def check_ollama_health() -> Dict[str, Any]:
@@ -258,28 +294,41 @@ async def run_conversational_agent(
 
         extracted = extract_plate_candidate_from_text(mensaje)
         if not extracted:
+            # Pregunta conversacional general (ej: resumen del día, alertas, saludo) -> responder con LLM Ollama + datos reales BD
+            snapshot = _get_general_db_snapshot(db)
+            llm_general = await _try_ollama_response(mensaje, snapshot, from_image=False)
+            if llm_general:
+                return {
+                    "respuesta": llm_general,
+                    "estado": "Consulta general",
+                    "placa_normalizada": "",
+                    "sugerencias": [],
+                    "datos": snapshot,
+                    "ocr": None,
+                    "motor": f"ollama:{get_active_ollama_model()}",
+                }
             return {
                 "respuesta": (
                     "No identifiqué una placa válida en tu mensaje. "
-                    "Indica el número de placa (por ejemplo: `2481KLM` o `4510-BGD`) o envía una foto de la placa."
+                    "Indica el número de placa (por ejemplo: `2481KLM` o `4510-BGD`), pregunta por el resumen del día o envía una foto de la placa."
                 ),
                 "estado": "Sin placa detectada",
                 "placa_normalizada": "",
                 "sugerencias": [],
                 "datos": None,
                 "ocr": None,
-                "motor": "determinista",
+                "motor": "determinista_bd",
             }
         plate_raw = extracted
 
     # Consultar datos reales en BD (Tool execution)
     verified = lookup_plate_status(db, plate_raw)
 
-    # Intentar redactar con Ollama en RunPod; si no responde, usar respuesta determinista exacta
+    # Redactar con Ollama LLM usando estrictamente los datos verificados de BD (con fallback determinista)
     ollama_reply = await _try_ollama_response(mensaje or "", verified, from_image=from_image)
     if ollama_reply:
         final_reply = ollama_reply
-        engine_used = f"ollama:{get_settings().ollama_model}"
+        engine_used = f"ollama:{get_active_ollama_model()}"
     else:
         final_reply = format_deterministic_reply(verified, from_image=from_image)
         engine_used = "determinista_bd"

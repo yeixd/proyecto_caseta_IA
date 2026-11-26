@@ -140,7 +140,15 @@ export default function ChatPage() {
                     <span className="font-mono text-xs text-slate-400">Placa: {m.placa}</span>
                   )}
                   {m.motor && (
-                    <span className="text-[10px] text-slate-500 ml-auto">{m.motor}</span>
+                    <span
+                      className={`text-[10px] px-2 py-0.5 rounded-full ml-auto font-mono ${
+                        m.motor.startsWith("ollama:")
+                          ? "bg-violet-500/20 text-violet-300 border border-violet-500/40"
+                          : "bg-slate-800 text-slate-400"
+                      }`}
+                    >
+                      {m.motor.startsWith("ollama:") ? `LLM · ${m.motor}` : m.motor}
+                    </span>
                   )}
                 </div>
               )}
