@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -31,6 +31,12 @@ export default function DashboardPage({
 }) {
   const [selectedCaseta, setSelectedCaseta] = useState(casetas[0]?.id || 1);
   const [uploading, setUploading] = useState(false);
+
+  useEffect(() => {
+    if (casetas.length > 0 && !casetas.some((c) => c.id === selectedCaseta)) {
+      setSelectedCaseta(casetas[0].id);
+    }
+  }, [casetas, selectedCaseta]);
   const [uploadMsg, setUploadMsg] = useState("");
   const fileRef = useRef(null);
 

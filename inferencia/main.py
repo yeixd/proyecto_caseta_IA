@@ -8,12 +8,13 @@ from __future__ import annotations
 import base64
 import logging
 import os
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import cv2
+import httpx
 import numpy as np
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -27,6 +28,7 @@ logging.basicConfig(
 logger = logging.getLogger("peaje.inferencia.api")
 
 INFERENCE_API_KEY = os.environ.get("INFERENCE_API_KEY", "").strip()
+LOCAL_OLLAMA_BASE = os.environ.get("LOCAL_OLLAMA_BASE", "http://127.0.0.1:11434").rstrip("/")
 
 app = FastAPI(
     title="Peaje IA - Servicio Único de Inferencia",
@@ -119,6 +121,38 @@ async def infer_plate_upload(file: UploadFile = File(...)):
     raw = await file.read()
     img = decode_image_bytes(raw)
     return pipeline.infer_plate_only(img)
+
+
+# ----------------------------------------------------------------------
+# Proxy integrado hacia Ollama local (permite usar UN SOLO túnel/URL para
+# Inferencia + Agente LLM tanto en Colab como en RunPod)
+# ----------------------------------------------------------------------
+@app.get("/ollama/api/tags")
+async def proxy_ollama_tags():
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{LOCAL_OLLAMA_BASE}/api/tags")
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail=resp.text[:300])
+        return resp.json()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Ollama local no responde: {exc}")
+
+
+@app.post("/ollama/api/chat")
+async def proxy_ollama_chat(payload: Dict[str, Any] = Body(...)):
+    try:
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            resp = await client.post(f"{LOCAL_OLLAMA_BASE}/api/chat", json=payload)
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail=resp.text[:300])
+        return resp.json()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Error llamando a Ollama local: {exc}")
 
 
 if __name__ == "__main__":

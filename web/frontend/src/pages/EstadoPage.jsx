@@ -10,6 +10,8 @@ export default function EstadoPage() {
   const [savingCfg, setSavingCfg] = useState(false);
   const [cfgMsg, setCfgMsg] = useState("");
   const [hwMsg, setHwMsg] = useState("");
+  const [ollamaTestMsg, setOllamaTestMsg] = useState("");
+  const [testingOllama, setTestingOllama] = useState(false);
 
   const [inferenceUrl, setInferenceUrl] = useState("");
   const [inferenceApiKey, setInferenceApiKey] = useState("");
@@ -219,6 +221,39 @@ export default function EstadoPage() {
                 Modelo configurado: <strong>{status.ollama.configured_model}</strong>
               </p>
             )}
+            {status.ollama?.available_models?.length > 0 && (
+              <p className="text-xs text-emerald-300">
+                Modelos disponibles: {status.ollama.available_models.join(", ")}
+              </p>
+            )}
+            <div className="pt-1">
+              <button
+                type="button"
+                disabled={testingOllama}
+                onClick={async () => {
+                  setTestingOllama(true);
+                  setOllamaTestMsg("");
+                  try {
+                    const { data } = await api.post("/api/v1/estado/test-ollama");
+                    setOllamaTestMsg(
+                      data.ok
+                        ? `LLM OK (${data.model}): ${data.reply}`
+                        : `Error LLM: ${data.error}`
+                    );
+                  } catch (err) {
+                    setOllamaTestMsg(err?.response?.data?.detail || "Error probando Ollama.");
+                  } finally {
+                    setTestingOllama(false);
+                  }
+                }}
+                className="btn-secondary text-xs"
+              >
+                {testingOllama ? "Probando Ollama LLM..." : "Probar LLM Ollama"}
+              </button>
+              {ollamaTestMsg && (
+                <p className="text-xs text-violet-300 mt-2 whitespace-pre-line">{ollamaTestMsg}</p>
+              )}
+            </div>
           </div>
 
           {/* Base de datos */}

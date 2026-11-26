@@ -618,7 +618,9 @@ class TollInferencePipeline:
 
     # ------------------------------------------------------------------
     # M4 (Bonificación +5): Segmentación y conteo de pasajeros visibles
-    # EXCLUSIVAMENTE DENTRO DEL VEHÍCULO (rechaza transeúntes/peatones afuera).
+    # EXCLUSIVAMENTE DENTRO DE LA CABINA DEL VEHÍCULO (rechaza transeúntes
+    # adelante, atrás o a los costados mediante máscara binaria M2 + lista negra
+    # de peatones de cuerpo completo).
     # Privacidad: SOLO máscara y conteo, SIN reconocimiento facial ni recortes.
     # ------------------------------------------------------------------
     def _infer_passengers_seg(
@@ -632,114 +634,177 @@ class TollInferencePipeline:
         if self.m4_passengers_seg is None or vehicle_bbox is None:
             return 0, []
 
+        img_h, img_w = image_bgr.shape[:2]
         vx1, vy1, vx2, vy2 = vehicle_bbox
         bw = max(vx2 - vx1, 1)
         bh = max(vy2 - vy1, 1)
 
-        # Zona de cabina/ventanas estrictamente interior al vehículo:
-        # En vehículos cerrados (auto, minibus, bus, camion), los pasajeros sentados
-        # se ubican en la zona superior/media (ventanas y parabrisas), nunca con pies en el suelo.
-        if categoria == "moto":
-            cabin_x1 = vx1 + int(bw * 0.05)
-            cabin_x2 = vx2 - int(bw * 0.05)
-            cabin_y1 = max(0, vy1 - int(bh * 0.25))
-            cabin_y2 = vy2
+        # Máscara binaria del vehículo (M2) para verificar píxel a píxel si la persona está dentro
+        vehicle_mask_bin = np.zeros((img_h, img_w), dtype=np.uint8)
+        if vehicle_poly is not None and len(vehicle_poly) >= 3:
+            cv2.fillPoly(vehicle_mask_bin, [vehicle_poly], 1)
         else:
-            cabin_x1 = vx1 + int(bw * 0.07)
-            cabin_x2 = vx2 - int(bw * 0.07)
-            cabin_y1 = vy1 + int(bh * 0.04)
-            cabin_y2 = vy1 + int(bh * 0.68)
+            cv2.rectangle(vehicle_mask_bin, (vx1, vy1), (vx2, vy2), 1, -1)
+
+        # Banda interior de ventanas/parabrisas para vehículos cerrados
+        if categoria == "moto":
+            win_x1 = vx1 + int(bw * 0.05)
+            win_x2 = vx2 - int(bw * 0.05)
+            win_y1 = max(0, vy1 - int(bh * 0.25))
+            win_y2 = vy2
+        else:
+            win_x1 = vx1 + int(bw * 0.10)
+            win_x2 = vx2 - int(bw * 0.10)
+            win_y1 = vy1 + int(bh * 0.06)
+            win_y2 = vy1 + int(bh * 0.62)
+
+        def _mask_coverage(gx1: int, gy1: int, gx2: int, gy2: int) -> float:
+            cx1, cy1 = max(0, gx1), max(0, gy1)
+            cx2, cy2 = min(img_w, gx2), min(img_h, gy2)
+            if cx2 <= cx1 or cy2 <= cy1:
+                return 0.0
+            roi = vehicle_mask_bin[cy1:cy2, cx1:cx2]
+            return float(np.mean(roi))
+
+        def _iou(box_a: Tuple[int, int, int, int], box_b: Tuple[int, int, int, int]) -> float:
+            ix1, iy1 = max(box_a[0], box_b[0]), max(box_a[1], box_b[1])
+            ix2, iy2 = min(box_a[2], box_b[2]), min(box_a[3], box_b[3])
+            inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+            if inter <= 0:
+                return 0.0
+            area_a = max(1, (box_a[2] - box_a[0]) * (box_a[3] - box_a[1]))
+            area_b = max(1, (box_b[2] - box_b[0]) * (box_b[3] - box_b[1]))
+            return inter / float(min(area_a, area_b))
+
+        def _is_exterior_pedestrian(gx1: int, gy1: int, gx2: int, gy2: int) -> bool:
+            """Detecta si una persona en la imagen completa es un transeúnte fuera del vehículo."""
+            if categoria == "moto":
+                return _mask_coverage(gx1, gy1, gx2, gy2) < 0.30
+            pw = max(gx2 - gx1, 1)
+            ph = max(gy2 - gy1, 1)
+            # Pies/base llegan a la parte baja de puertas/ruedas/suelo -> transeúnte de pie
+            if gy2 > vy1 + bh * 0.68:
+                return True
+            # Altura demasiado grande respecto al vehículo -> persona parada adelante/atrás
+            if ph > bh * 0.50:
+                return True
+            # Cabeza por encima del techo del vehículo -> persona detrás del vehículo
+            if gy1 < vy1 + bh * 0.02:
+                return True
+            # Toca los bordes izquierdo o derecho del vehículo -> peatón al costado
+            if gx1 < vx1 + bw * 0.08 or gx2 > vx2 - bw * 0.08:
+                return True
+            # Poca superposición con la máscara binaria del vehículo (ej. peatón ocluyendo por delante)
+            if _mask_coverage(gx1, gy1, gx2, gy2) < 0.82:
+                return True
+            # Ancho excesivo para una sola persona sentada
+            if pw > bw * 0.48:
+                return True
+            return False
+
+        def _is_valid_cabin_passenger(
+            gx1: int,
+            gy1: int,
+            gx2: int,
+            gy2: int,
+            blacklisted: List[Tuple[int, int, int, int]],
+        ) -> bool:
+            if _is_exterior_pedestrian(gx1, gy1, gx2, gy2):
+                return False
+
+            # Rechazar si coincide con un transeúnte de cuerpo completo detectado en la imagen global
+            cand_box = (gx1, gy1, gx2, gy2)
+            for ext_box in blacklisted:
+                if _iou(cand_box, ext_box) >= 0.30:
+                    return False
+
+            if categoria != "moto":
+                cx = (gx1 + gx2) / 2.0
+                cy = (gy1 + gy2) / 2.0
+                # Centro estrictamente dentro de la banda interior de ventanas/parabrisas
+                if not (win_x1 <= cx <= win_x2 and win_y1 <= cy <= win_y2):
+                    return False
+                if vehicle_poly is not None and len(vehicle_poly) >= 3:
+                    if cv2.pointPolygonTest(vehicle_poly, (float(cx), float(cy)), False) < 0.0:
+                        return False
+            return True
 
         passenger_masks: List[np.ndarray] = []
         centers_seen: List[Tuple[float, float]] = []
+        exterior_blacklist: List[Tuple[int, int, int, int]] = []
 
-        def _is_passenger_inside_cabin(gx1: int, gy1: int, gx2: int, gy2: int) -> bool:
-            pw = max(gx2 - gx1, 1)
-            ph = max(gy2 - gy1, 1)
-            cx = (gx1 + gx2) / 2.0
-            cy = (gy1 + gy2) / 2.0
-
-            # 1. Para vehículos cerrados, rechazar transeúntes de cuerpo completo parados en la calle
-            if categoria != "moto":
-                # Si los pies/base de la persona llegan a la zona de ruedas/suelo, es un transeúnte
-                if gy2 > vy1 + bh * 0.76:
-                    return False
-                # Si la persona es casi tan alta como todo el vehículo, está parada afuera
-                if ph > bh * 0.60:
-                    return False
-                # Si la cabeza sobresale por encima del techo del vehículo, está parada atrás/adelante
-                if gy1 < vy1 - bh * 0.03:
-                    return False
-
-            # 2. Centro estrictamente dentro de la máscara del vehículo (si existe máscara M2)
-            if categoria != "moto" and vehicle_poly is not None and len(vehicle_poly) >= 3:
-                if cv2.pointPolygonTest(vehicle_poly, (float(cx), float(cy)), False) < 0.0:
-                    return False
-
-            # 3. Al menos 70% del área de la persona debe estar DENTRO de la zona de cabina interior
-            ix1 = max(gx1, cabin_x1)
-            iy1 = max(gy1, cabin_y1)
-            ix2 = min(gx2, cabin_x2)
-            iy2 = min(gy2, cabin_y2)
-            inter_w = max(0, ix2 - ix1)
-            inter_h = max(0, iy2 - iy1)
-            inter_area = float(inter_w * inter_h)
-            person_area = float(pw * ph)
-            overlap_ratio = inter_area / max(person_area, 1.0)
-            if overlap_ratio < 0.70:
-                return False
-
-            return True
-
-        def _collect_from_preds(preds, offset_x: int = 0, offset_y: int = 0):
-            if not preds or len(preds[0].boxes) == 0:
-                return
-            res = preds[0]
-            names = res.names
-            for i in range(len(res.boxes)):
-                cls_id = int(res.boxes.cls[i].item())
-                label = str(names.get(cls_id, "")).lower()
+        # PASADA 1 (Imagen completa PRIMERO): detectar transeúntes de cuerpo completo para bloquearlos
+        preds_full = self.m4_passengers_seg.predict(
+            source=image_bgr, conf=0.25, device=self.device, verbose=False
+        )
+        if preds_full and len(preds_full[0].boxes) > 0:
+            res_f = preds_full[0]
+            names_f = res_f.names
+            for i in range(len(res_f.boxes)):
+                cls_id = int(res_f.boxes.cls[i].item())
+                label = str(names_f.get(cls_id, "")).lower()
                 if label not in {"person", "persona", "pasajero", "passenger", "driver", "conductor"}:
                     continue
-                px1, py1, px2, py2 = [int(v) for v in res.boxes.xyxy[i].tolist()]
-                gx1, gy1, gx2, gy2 = px1 + offset_x, py1 + offset_y, px2 + offset_x, py2 + offset_y
-                cx, cy = (gx1 + gx2) / 2.0, (gy1 + gy2) / 2.0
+                conf_p = float(res_f.boxes.conf[i].item())
+                gx1, gy1, gx2, gy2 = [int(v) for v in res_f.boxes.xyxy[i].tolist()]
 
-                if not _is_passenger_inside_cabin(gx1, gy1, gx2, gy2):
+                if _is_exterior_pedestrian(gx1, gy1, gx2, gy2):
+                    exterior_blacklist.append((gx1, gy1, gx2, gy2))
                     continue
 
+                if conf_p < 0.34:
+                    continue
+
+                cx, cy = (gx1 + gx2) / 2.0, (gy1 + gy2) / 2.0
+                if not _is_valid_cabin_passenger(gx1, gy1, gx2, gy2, exterior_blacklist):
+                    continue
                 if any(math.hypot(cx - ox, cy - oy) < 28.0 for ox, oy in centers_seen):
                     continue
                 centers_seen.append((cx, cy))
-
-                if res.masks is not None and i < len(res.masks.xy) and len(res.masks.xy[i]) >= 3:
-                    poly = res.masks.xy[i].astype(np.int32)
-                    poly[:, 0] += offset_x
-                    poly[:, 1] += offset_y
-                    passenger_masks.append(poly)
+                if res_f.masks is not None and i < len(res_f.masks.xy) and len(res_f.masks.xy[i]) >= 3:
+                    passenger_masks.append(res_f.masks.xy[i].astype(np.int32))
                 else:
-                    rect_poly = np.array(
-                        [[gx1, gy1], [gx2, gy1], [gx2, gy2], [gx1, gy2]], dtype=np.int32
+                    passenger_masks.append(
+                        np.array([[gx1, gy1], [gx2, gy1], [gx2, gy2], [gx1, gy2]], dtype=np.int32)
                     )
-                    passenger_masks.append(rect_poly)
 
-        # Pasada 1: zoom estricto sobre la cabina/parabrisas del vehículo (maximiza precisión interior)
-        crop_y1 = max(0, cabin_y1)
-        crop_y2 = min(image_bgr.shape[0], cabin_y2)
-        crop_x1 = max(0, cabin_x1)
-        crop_x2 = min(image_bgr.shape[1], cabin_x2)
+        # PASADA 2 (Zoom estricto en parabrisas/ventanas): solo agrega pasajeros NO bloqueados
+        crop_y1, crop_y2 = max(0, win_y1), min(img_h, win_y2)
+        crop_x1, crop_x2 = max(0, win_x1), min(img_w, win_x2)
         cabin_crop = image_bgr[crop_y1:crop_y2, crop_x1:crop_x2]
-        if cabin_crop.size > 0 and cabin_crop.shape[1] >= 40 and cabin_crop.shape[0] >= 40:
+        if cabin_crop.size > 0 and cabin_crop.shape[1] >= 50 and cabin_crop.shape[0] >= 40:
             preds_cabin = self.m4_passengers_seg.predict(
-                source=cabin_crop, conf=0.25, device=self.device, verbose=False
+                source=cabin_crop, conf=0.35, device=self.device, verbose=False
             )
-            _collect_from_preds(preds_cabin, crop_x1, crop_y1)
+            if preds_cabin and len(preds_cabin[0].boxes) > 0:
+                res_c = preds_cabin[0]
+                names_c = res_c.names
+                for i in range(len(res_c.boxes)):
+                    cls_id = int(res_c.boxes.cls[i].item())
+                    label = str(names_c.get(cls_id, "")).lower()
+                    if label not in {"person", "persona", "pasajero", "passenger", "driver", "conductor"}:
+                        continue
+                    px1, py1, px2, py2 = [int(v) for v in res_c.boxes.xyxy[i].tolist()]
+                    gx1, gy1 = px1 + crop_x1, py1 + crop_y1
+                    gx2, gy2 = px2 + crop_x1, py2 + crop_y1
 
-        # Pasada 2: imagen completa filtrada estrictamente por cabina interior
-        preds_full = self.m4_passengers_seg.predict(
-            source=image_bgr, conf=0.30, device=self.device, verbose=False
-        )
-        _collect_from_preds(preds_full, 0, 0)
+                    if not _is_valid_cabin_passenger(gx1, gy1, gx2, gy2, exterior_blacklist):
+                        continue
+
+                    cx, cy = (gx1 + gx2) / 2.0, (gy1 + gy2) / 2.0
+                    if any(math.hypot(cx - ox, cy - oy) < 28.0 for ox, oy in centers_seen):
+                        continue
+                    centers_seen.append((cx, cy))
+
+                    if res_c.masks is not None and i < len(res_c.masks.xy) and len(res_c.masks.xy[i]) >= 3:
+                        poly = res_c.masks.xy[i].astype(np.int32)
+                        poly[:, 0] += crop_x1
+                        poly[:, 1] += crop_y1
+                        passenger_masks.append(poly)
+                    else:
+                        passenger_masks.append(
+                            np.array([[gx1, gy1], [gx2, gy1], [gx2, gy2], [gx1, gy2]], dtype=np.int32)
+                        )
 
         return len(passenger_masks), passenger_masks
 

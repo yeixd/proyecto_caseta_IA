@@ -124,6 +124,12 @@ function MobileCasetaTab({ casetas, onRefresh }) {
   const [cameraOn, setCameraOn] = useState(false);
   const [facing, setFacing] = useState("environment");
   const [casetaId, setCasetaId] = useState(casetas[0]?.id || 1);
+
+  useEffect(() => {
+    if (casetas.length > 0 && !casetas.some((c) => c.id === casetaId)) {
+      setCasetaId(casetas[0].id);
+    }
+  }, [casetas, casetaId]);
   const [fpsIdx, setFpsIdx] = useState(0);
   const [streaming, setStreaming] = useState(false);
   const [sending, setSending] = useState(false);

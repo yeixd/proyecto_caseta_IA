@@ -47,9 +47,15 @@ def set_ollama_runtime_config(url: Optional[str] = None, model: Optional[str] = 
 
 
 def get_active_ollama_url() -> str:
-    if _runtime_ollama_url is not None:
+    if _runtime_ollama_url is not None and _runtime_ollama_url:
         return _runtime_ollama_url
-    return get_settings().ollama_url.strip().rstrip("/")
+    env_url = get_settings().ollama_url.strip().rstrip("/")
+    if env_url:
+        return env_url
+    # Auto-conectar al proxy /ollama integrado dentro de INFERENCE_URL (Colab/RunPod 1 sola URL)
+    if inference_client.active_url:
+        return f"{inference_client.active_url}/ollama"
+    return ""
 
 
 def get_active_ollama_model() -> str:
@@ -218,6 +224,31 @@ def _get_general_db_snapshot(db: Session) -> Dict[str, Any]:
             }
             for p in ultimos
         ],
+    }
+
+
+async def test_ollama_prompt() -> Dict[str, Any]:
+    """Ejecuta una prueba real contra Ollama (/api/chat) para verificar el LLM desde Estado."""
+    ollama_url = get_active_ollama_url()
+    if not ollama_url:
+        return {"ok": False, "error": "Ni OLLAMA_URL ni INFERENCE_URL están configuradas."}
+    reply = await _try_ollama_response(
+        user_message="Confirma en una sola oración corta que eres el agente LLM del sistema de peaje.",
+        verified_data={"sistema": "Sistema Inteligente de Control de Peaje UNIFRANZ", "estado": "operativo"},
+        from_image=False,
+    )
+    if reply:
+        return {
+            "ok": True,
+            "url": ollama_url,
+            "model": get_active_ollama_model(),
+            "reply": reply,
+        }
+    return {
+        "ok": False,
+        "url": ollama_url,
+        "model": get_active_ollama_model(),
+        "error": "Ollama no respondió a /api/chat. Verifica que la Celda 2 de Colab (o RunPod) esté corriendo.",
     }
 
 

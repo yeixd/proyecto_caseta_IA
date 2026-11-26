@@ -43,7 +43,12 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.agent import check_ollama_health, run_conversational_agent, set_ollama_runtime_config
+from app.agent import (
+    check_ollama_health,
+    run_conversational_agent,
+    set_ollama_runtime_config,
+    test_ollama_prompt,
+)
 from app.auth import (
     authenticate_google_user,
     create_access_token,
@@ -270,7 +275,10 @@ async def registrar_paso_frame(
     t0 = time.perf_counter()
     caseta = db.query(Caseta).filter(Caseta.id == caseta_id).first()
     if not caseta:
-        raise HTTPException(status_code=404, detail=f"Caseta {caseta_id} no encontrada.")
+        # Si el ID enviado (ej. default 1) no coincide con el autoincremento en PostgreSQL, usar la primera caseta activa
+        caseta = db.query(Caseta).order_by(Caseta.id.asc()).first()
+    if not caseta:
+        raise HTTPException(status_code=404, detail="No existen casetas registradas en la base de datos.")
 
     image_bytes = await file.read()
     if not image_bytes:
@@ -897,6 +905,12 @@ async def actualizar_endpoints_runtime(
         "inference": await inference_client.check_health(),
         "ollama": await check_ollama_health(),
     }
+
+
+@app.post("/api/v1/estado/test-ollama", tags=["Estado del Sistema"])
+async def probar_ollama_llm(_user: Usuario = Depends(get_current_user)):
+    """Envía un prompt real a Ollama LLM para verificar su respuesta en vivo."""
+    return await test_ollama_prompt()
 
 
 @app.post("/api/v1/hardware/test", tags=["Hardware ESP32"])
