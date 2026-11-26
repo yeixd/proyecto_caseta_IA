@@ -54,8 +54,8 @@ export default function CasetaScreen({ token }) {
     setErrorMsg("");
     try {
       const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.6,
-        skipProcessing: true
+        quality: 0.85,
+        skipProcessing: false
       });
       if (!photo?.uri) return;
       const data = await sendCasetaFrame(token, photo.uri, casetaId);
@@ -76,7 +76,7 @@ export default function CasetaScreen({ token }) {
     if (inFlightRef.current) return;
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) return;
-    const result = await ImagePicker.launchImageLibraryAsync({ quality: 0.72 });
+    const result = await ImagePicker.launchImageLibraryAsync({ quality: 0.88 });
     if (result.canceled || !result.assets?.[0]?.uri) return;
 
     inFlightRef.current = true;

@@ -68,7 +68,7 @@ export function formatVehicleClass(cat) {
  * Redimensiona y comprime fotos pesadas de cámaras de celular (8-15 MB) a ~180 KB (máx 1280px)
  * para envío instantáneo desde el móvil hacia Render + Google Colab sin timeouts.
  */
-export async function compressImageForUpload(fileOrBlob, maxDim = 1280, quality = 0.82) {
+export async function compressImageForUpload(fileOrBlob, maxDim = 1600, quality = 0.90) {
   if (!fileOrBlob || typeof document === "undefined") return fileOrBlob;
   return new Promise((resolve) => {
     const img = new Image();

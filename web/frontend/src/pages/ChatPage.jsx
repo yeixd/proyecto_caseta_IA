@@ -1,6 +1,6 @@
 import React, { useRef, useState } from "react";
 import { Bot, Camera, Send, Sparkles, User, X } from "lucide-react";
-import { api } from "../api";
+import { api, compressImageForUpload } from "../api";
 
 const STATE_BADGE = {
   "Registrada y con paso": "bg-emerald-500/20 text-emerald-300 border-emerald-500/40",
@@ -56,7 +56,10 @@ export default function ChatPage() {
     try {
       const fd = new FormData();
       if (msgText) fd.append("mensaje", msgText);
-      if (currentFile) fd.append("file", currentFile);
+      if (currentFile) {
+        const sharpBlob = await compressImageForUpload(currentFile, 1600, 0.92);
+        fd.append("file", sharpBlob, "placa_web.jpg");
+      }
 
       const { data } = await api.post("/api/v1/agente/chat", fd);
       setMessages((prev) => [

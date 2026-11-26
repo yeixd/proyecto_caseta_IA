@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.inference_client import inference_client
-from app.models import Alerta, Caseta, Paso, Vehiculo
+from app.models import Alerta, Caseta, Paso, Tarifa, Vehiculo
 from app.plate_utils import extract_plate_candidate_from_text, lookup_plate_status
 
 logger = logging.getLogger("peaje.agent")
@@ -195,13 +195,17 @@ async def _try_ollama_response(
 
 
 def _get_general_db_snapshot(db: Session) -> Dict[str, Any]:
-    """Obtiene un resumen real de la BD para preguntas conversacionales generales al LLM."""
+    """Obtiene un resumen real y completo de la BD para preguntas operativas en web y móvil."""
     start_of_day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     pasos_hoy = db.query(Paso).filter(Paso.created_at >= start_of_day).all()
     ultimos = db.query(Paso).order_by(Paso.created_at.desc()).limit(5).all()
+    alertas_pend_list = (
+        db.query(Alerta).filter(Alerta.atendida == False).order_by(Alerta.created_at.desc()).limit(6).all()  # noqa: E712
+    )
     alertas_pend = db.query(Alerta).filter(Alerta.atendida == False).count()  # noqa: E712
     total_vehiculos = db.query(Vehiculo).count()
     casetas = [c.nombre for c in db.query(Caseta).all()]
+    tarifas = db.query(Tarifa).order_by(Tarifa.categoria.asc(), Tarifa.ejes.asc()).all()
 
     return {
         "tipo_consulta": "resumen_general_sistema",
@@ -209,12 +213,24 @@ def _get_general_db_snapshot(db: Session) -> Dict[str, Any]:
         "total_vehiculos_registrados": total_vehiculos,
         "casetas": casetas,
         "pasos_hoy": len(pasos_hoy),
-        "recaudacion_hoy_bs": round(sum(p.monto for p in pasos_hoy if p.estado == "APROBADO"), 2),
+        "recaudacion_total_hoy_bs": round(sum(p.monto for p in pasos_hoy), 2),
+        "recaudacion_aprobada_hoy_bs": round(sum(p.monto for p in pasos_hoy if p.estado == "APROBADO"), 2),
         "pasajeros_hoy": sum(p.pasajeros for p in pasos_hoy),
         "alertas_pendientes": alertas_pend,
+        "alertas_recientes": [
+            {
+                "tipo": a.tipo,
+                "mensaje": a.mensaje,
+                "fecha": a.created_at.isoformat() if a.created_at else None,
+            }
+            for a in alertas_pend_list
+        ],
+        "tarifas_vigentes": [
+            {"categoria": t.categoria, "ejes": t.ejes, "monto_bs": t.monto} for t in tarifas
+        ],
         "ultimos_5_pasos": [
             {
-                "placa": p.placa_normalizada,
+                "placa": p.placa_normalizada or "ILEGIBLE",
                 "categoria": p.categoria_detectada,
                 "ejes": p.ejes_detectados,
                 "pasajeros": p.pasajeros,
@@ -225,6 +241,46 @@ def _get_general_db_snapshot(db: Session) -> Dict[str, Any]:
             for p in ultimos
         ],
     }
+
+
+def _format_general_intent_fallback(mensaje: str, snapshot: Dict[str, Any]) -> Optional[str]:
+    """Responde con datos reales verificados de la BD a consultas operativas rápidas desde el móvil."""
+    q = (mensaje or "").lower().strip()
+    if any(k in q for k in ("resumen", "hoy", "recaud", "estad", "kpi", "cuántos", "cuantos", "total")):
+        return (
+            "📊 **Resumen en vivo del día (Base de Datos):**\n"
+            f"- **Pasos registrados hoy:** {snapshot['pasos_hoy']}\n"
+            f"- **Recaudación total hoy:** Bs. {snapshot['recaudacion_total_hoy_bs']:.2f} "
+            f"(Aprobada: Bs. {snapshot['recaudacion_aprobada_hoy_bs']:.2f})\n"
+            f"- **Pasajeros contabilizados hoy (M4):** {snapshot['pasajeros_hoy']}\n"
+            f"- **Alertas pendientes:** {snapshot['alertas_pendientes']}\n"
+            f"- **Vehículos empadronados:** {snapshot['total_vehiculos_registrados']}"
+        )
+    if any(k in q for k in ("alerta", "evasi", "infracc", "pendiente", "sin saldo")):
+        if not snapshot["alertas_recientes"]:
+            return "✅ **No hay alertas pendientes** en este momento en ninguna caseta."
+        lines = [f"🚨 **Alertas activas pendientes ({snapshot['alertas_pendientes']}):**"]
+        for a in snapshot["alertas_recientes"][:5]:
+            lines.append(f"- **{a['tipo']}:** {a['mensaje']}")
+        return "\n".join(lines)
+    if any(k in q for k in ("tarifa", "precio", "costo", "cobr", "cuanto vale", "cuánto vale")):
+        if not snapshot["tarifas_vigentes"]:
+            return "No hay tarifas configuradas aún en la base de datos."
+        lines = ["💰 **Tarifario oficial vigente por clase y ejes:**"]
+        for t in snapshot["tarifas_vigentes"]:
+            lines.append(f"- **{t['categoria'].upper()}** ({t['ejes']} ejes): **Bs. {t['monto_bs']:.2f}**")
+        return "\n".join(lines)
+    if any(k in q for k in ("último", "ultimo", "reciente", "pasos", "historial")):
+        if not snapshot["ultimos_5_pasos"]:
+            return "Aún no se han registrado pasos recientes en las casetas."
+        lines = ["🚗 **Últimos 5 pasos registrados en el sistema:**"]
+        for p in snapshot["ultimos_5_pasos"]:
+            lines.append(
+                f"- `{p['placa']}` · {p['categoria']} ({p['ejes']} ejes, {p['pasajeros']} pasaj.) · "
+                f"**Bs. {p['monto_bs']:.2f}** ({p['estado']})"
+            )
+        return "\n".join(lines)
+    return None
 
 
 async def test_ollama_prompt() -> Dict[str, Any]:
@@ -288,6 +344,7 @@ async def run_conversational_agent(
     """Ejecuta el flujo completo del agente por imagen o por texto."""
     from_image = image_bytes is not None and len(image_bytes) > 0
     ocr_info: Optional[Dict[str, Any]] = None
+    analisis_vehiculo: Optional[Dict[str, Any]] = None
     plate_raw = ""
 
     if from_image:
@@ -296,24 +353,52 @@ async def run_conversational_agent(
         plate_raw = str(ocr_info.get("texto", "")).strip()
         legible = bool(ocr_info.get("legible", len(plate_raw) >= 4))
 
+        # Si la foto móvil muestra todo el vehículo borroso/lejano, ejecutar inferencia completa (recorte vehículo + deblur + M2/M3/M4)
+        if not plate_raw or not legible or float(ocr_info.get("confianza") or 0.0) < 0.55:
+            try:
+                full_res = await inference_client.infer_full(image_bytes, filename=filename)
+                full_placa = full_res.get("placa", {})
+                full_txt = str(full_placa.get("texto", "")).strip()
+                analisis_vehiculo = {
+                    "categoria": full_res.get("vehiculo", {}).get("categoria"),
+                    "categoria_nombre": full_res.get("vehiculo", {}).get("categoria_nombre"),
+                    "ejes": full_res.get("ejes"),
+                    "llantas_visibles": full_res.get("llantas_visibles"),
+                    "pasajeros": full_res.get("pasajeros"),
+                }
+                if full_txt and len(full_txt) >= 4:
+                    ocr_info = full_placa
+                    plate_raw = full_txt
+                    legible = True
+            except Exception:
+                pass
+
         if not plate_raw or not legible:
+            extra_veh = ""
+            if analisis_vehiculo and analisis_vehiculo.get("categoria_nombre"):
+                extra_veh = (
+                    f"\n\nSe identificó un **{analisis_vehiculo['categoria_nombre']}** con "
+                    f"**{analisis_vehiculo.get('ejes', 2)} ejes** y **{analisis_vehiculo.get('pasajeros', 0)} pasajero(s)**, "
+                    "pero la matrícula está demasiado borrosa u oculta."
+                )
             return {
                 "respuesta": (
                     "No se pudo detectar una placa legible en la imagen enviada. "
-                    "Por favor, toma o sube otra imagen más clara y enfocada de la placa."
+                    "Acércate un poco más a la matrícula o evita contraluces e intenta nuevamente."
+                    + extra_veh
                 ),
                 "estado": "Placa ilegible",
                 "placa_normalizada": "",
                 "sugerencias": [],
-                "datos": None,
+                "datos": {"analisis_vehiculo": analisis_vehiculo} if analisis_vehiculo else None,
                 "ocr": ocr_info,
-                "motor": "validacion_ocr",
+                "motor": "validacion_ocr_deblur",
             }
     else:
         if not mensaje or not mensaje.strip():
             return {
                 "respuesta": (
-                    "Por favor escribe una placa (por ejemplo: `2481-KLM`) o adjunta una fotografía de la placa para consultarla."
+                    "Por favor escribe una placa (por ejemplo: `2481-KLM`), toca una consulta rápida o adjunta una fotografía de la placa."
                 ),
                 "estado": "Sin consulta",
                 "placa_normalizada": "",
@@ -325,7 +410,6 @@ async def run_conversational_agent(
 
         extracted = extract_plate_candidate_from_text(mensaje)
         if not extracted:
-            # Pregunta conversacional general (ej: resumen del día, alertas, saludo) -> responder con LLM Ollama + datos reales BD
             snapshot = _get_general_db_snapshot(db)
             llm_general = await _try_ollama_response(mensaje, snapshot, from_image=False)
             if llm_general:
@@ -338,10 +422,21 @@ async def run_conversational_agent(
                     "ocr": None,
                     "motor": f"ollama:{get_active_ollama_model()}",
                 }
+            intent_reply = _format_general_intent_fallback(mensaje, snapshot)
+            if intent_reply:
+                return {
+                    "respuesta": intent_reply,
+                    "estado": "Consulta general",
+                    "placa_normalizada": "",
+                    "sugerencias": [],
+                    "datos": snapshot,
+                    "ocr": None,
+                    "motor": "determinista_bd",
+                }
             return {
                 "respuesta": (
                     "No identifiqué una placa válida en tu mensaje. "
-                    "Indica el número de placa (por ejemplo: `2481KLM` o `4510-BGD`), pregunta por el resumen del día o envía una foto de la placa."
+                    "Escribe una placa (ej. `2481KLM` o `5280-YIN`), consulta *Resumen de hoy*, *Alertas*, *Tarifas*, *Últimos pasos* o envía una foto."
                 ),
                 "estado": "Sin placa detectada",
                 "placa_normalizada": "",
@@ -354,6 +449,8 @@ async def run_conversational_agent(
 
     # Consultar datos reales en BD (Tool execution)
     verified = lookup_plate_status(db, plate_raw)
+    if analisis_vehiculo:
+        verified["analisis_vehiculo"] = analisis_vehiculo
 
     # Redactar con Ollama LLM usando estrictamente los datos verificados de BD (con fallback determinista)
     ollama_reply = await _try_ollama_response(mensaje or "", verified, from_image=from_image)

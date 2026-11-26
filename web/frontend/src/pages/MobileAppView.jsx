@@ -6,13 +6,17 @@ import {
   ExternalLink,
   Image as ImageIcon,
   LogOut,
+  Mic,
+  MicOff,
   Monitor,
   Pause,
   Play,
   RefreshCw,
   Send,
   Smartphone,
+  Sparkles,
   Timer,
+  Trash2,
   Video,
   VideoOff,
   X
@@ -173,7 +177,12 @@ function MobileCasetaTab({ casetas, pasos = [], onRefresh, onExitMobile }) {
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: mode }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: {
+          facingMode: { ideal: mode },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          advanced: [{ focusMode: "continuous" }]
+        },
         audio: false
       });
       streamRef.current = stream;
@@ -206,7 +215,7 @@ function MobileCasetaTab({ casetas, pasos = [], onRefresh, onExitMobile }) {
     setSending(true);
     setError("");
     try {
-      const optimized = await compressImageForUpload(blobOrFile, 1280, 0.82);
+      const optimized = await compressImageForUpload(blobOrFile, 1600, 0.90);
       const fd = new FormData();
       fd.append("file", optimized, filename.replace(/\.[^.]+$/, ".jpg"));
       fd.append("caseta_id", String(casetaId || casetas[0]?.id || 1));
@@ -234,7 +243,7 @@ function MobileCasetaTab({ casetas, pasos = [], onRefresh, onExitMobile }) {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-    const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.78));
+    const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.88));
     if (blob) await uploadFrameBlob(blob, `mobile_${Date.now()}.jpg`);
   }
 
@@ -563,35 +572,103 @@ function MobileCasetaTab({ casetas, pasos = [], onRefresh, onExitMobile }) {
   );
 }
 
+const MOBILE_QUICK_PROMPTS = [
+  { label: "📊 Resumen hoy", prompt: "Dame el resumen del día y recaudación" },
+  { label: "🚨 Alertas", prompt: "Muéstrame las alertas activas pendientes" },
+  { label: "💰 Tarifas", prompt: "Cuáles son las tarifas vigentes por vehículo y ejes" },
+  { label: "🚗 Últimos pasos", prompt: "Muéstrame los últimos 5 pasos registrados" },
+  { label: "🔎 2481-KLM", prompt: "2481-KLM" }
+];
+
+const INITIAL_AGENT_MSG = {
+  role: "assistant",
+  text: "Hola 👋 Soy tu Agente IA Móvil de Control de Peaje.\n• Escribe o dicta por voz una placa (ej. 2481-KLM o 5280-YIN).\n• Toma foto o elige de galería (incluye restauración para placas borrosas).\n• O toca un acceso rápido abajo.",
+  estado: null,
+  sugerencias: [],
+  datos: null,
+  ocr: null,
+  motor: null
+};
+
 function MobileConsultaTab({ casetas = [], onRefresh }) {
-  const [messages, setMessages] = useState([
-    {
-      role: "assistant",
-      text: "Modo Consulta activo. Escribe una placa (ej. 2481-KLM) o toma una foto de la placa con tu celular.",
-      estado: null,
-      sugerencias: []
-    }
-  ]);
+  const [messages, setMessages] = useState([INITIAL_AGENT_MSG]);
   const [input, setInput] = useState("");
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState("");
   const [sending, setSending] = useState(false);
-  const fileRef = useRef(null);
+  const [listening, setListening] = useState(false);
+  const camInputRef = useRef(null);
+  const galInputRef = useRef(null);
+  const endRef = useRef(null);
+  const recognitionRef = useRef(null);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, sending]);
+
+  function toggleVoiceDictation() {
+    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRec) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text: "Tu navegador móvil no soporta dictado por voz directo. Puedes usar el micrófono del teclado o escribir la placa.",
+          estado: null,
+          sugerencias: []
+        }
+      ]);
+      return;
+    }
+    if (listening && recognitionRef.current) {
+      recognitionRef.current.stop();
+      setListening(false);
+      return;
+    }
+    const rec = new SpeechRec();
+    rec.lang = "es-BO";
+    rec.interimResults = false;
+    rec.maxAlternatives = 1;
+    rec.onstart = () => setListening(true);
+    rec.onend = () => setListening(false);
+    rec.onerror = () => setListening(false);
+    rec.onresult = (ev) => {
+      const transcript = ev.results?.[0]?.[0]?.transcript || "";
+      if (transcript.trim()) {
+        setInput(transcript.trim());
+        send(transcript.trim());
+      }
+    };
+    recognitionRef.current = rec;
+    rec.start();
+  }
+
+  function handleSelectImage(e) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setFile(f);
+    setPreview(URL.createObjectURL(f));
+  }
+
+  function clearSelectedImage() {
+    setFile(null);
+    setPreview("");
+    if (camInputRef.current) camInputRef.current.value = "";
+    if (galInputRef.current) galInputRef.current.value = "";
+  }
 
   async function sendAsPasoToWeb() {
     if (!file || sending) return;
     const curFile = file;
     const curPreview = preview;
-    setFile(null);
-    setPreview("");
-    if (fileRef.current) fileRef.current.value = "";
+    clearSelectedImage();
     setSending(true);
     setMessages((prev) => [
       ...prev,
-      { role: "user", text: "Registrar paso de vehículo en Panel Web", image: curPreview || null }
+      { role: "user", text: "Registrar vehículo en Panel Web", image: curPreview || null }
     ]);
     try {
-      const optimized = await compressImageForUpload(curFile, 1280, 0.82);
+      const optimized = await compressImageForUpload(curFile, 1600, 0.90);
       const fd = new FormData();
       fd.append("file", optimized, `consulta_paso_${Date.now()}.jpg`);
       fd.append("caseta_id", String(casetas[0]?.id || 1));
@@ -603,15 +680,20 @@ function MobileConsultaTab({ casetas = [], onRefresh }) {
         ...prev,
         {
           role: "assistant",
-          text: `✓ Registro #${p.id} enviado al Panel Web:\n• Placa: ${
+          text: `✅ Registro #${p.id} enviado en vivo al Panel Web:\n• Placa: ${
             p.placa_normalizada || "ILEGIBLE"
           }\n• Clase: ${formatVehicleClass(p.categoria_detectada)}\n• Ejes: ${
             p.ejes_detectados
-          }${p.llantas_visibles !== undefined ? ` (${p.llantas_visibles} llantas)` : ""}\n• Pasajeros: ${
-            p.pasajeros
-          }\n• Tarifa: Bs. ${Number(p.monto).toFixed(2)} (${p.estado})`,
-          estado: null,
-          sugerencias: []
+          }${
+            p.llantas_visibles !== undefined ? ` (${p.llantas_visibles} llantas)` : ""
+          }\n• Pasajeros: ${p.pasajeros}\n• Tarifa: Bs. ${Number(p.monto).toFixed(2)} (${
+            p.estado
+          })`,
+          estado: p.estado === "APROBADO" ? "Registrada y con paso" : "Identificada no registrada",
+          placa: p.placa_normalizada,
+          sugerencias: [],
+          evidenceUrl: p.imagen_url ? resolveImageUrl(p.imagen_url) : null,
+          motor: "caseta_en_vivo"
         }
       ]);
     } catch (err) {
@@ -636,19 +718,21 @@ function MobileConsultaTab({ casetas = [], onRefresh }) {
 
     setMessages((prev) => [
       ...prev,
-      { role: "user", text: msgText || "Foto de placa", image: preview || null }
+      {
+        role: "user",
+        text: msgText || "Analizar fotografía de placa / vehículo",
+        image: curFile ? preview : null
+      }
     ]);
     setInput("");
-    setFile(null);
-    setPreview("");
-    if (fileRef.current) fileRef.current.value = "";
+    if (curFile) clearSelectedImage();
     setSending(true);
 
     try {
       const fd = new FormData();
       if (msgText) fd.append("mensaje", msgText);
       if (curFile) {
-        const optimized = await compressImageForUpload(curFile, 1280, 0.82);
+        const optimized = await compressImageForUpload(curFile, 1600, 0.92);
         fd.append("file", optimized, "placa_movil.jpg");
       }
       const { data } = await api.post("/api/v1/agente/chat", fd);
@@ -659,7 +743,10 @@ function MobileConsultaTab({ casetas = [], onRefresh }) {
           text: data.respuesta,
           estado: data.estado,
           placa: data.placa_normalizada,
-          sugerencias: data.sugerencias || []
+          sugerencias: data.sugerencias || [],
+          datos: data.datos || null,
+          ocr: data.ocr || null,
+          motor: data.motor || null
         }
       ]);
     } catch (err) {
@@ -667,7 +754,7 @@ function MobileConsultaTab({ casetas = [], onRefresh }) {
         ...prev,
         {
           role: "assistant",
-          text: err?.response?.data?.detail || "Error consultando al agente.",
+          text: err?.response?.data?.detail || "Error consultando al agente en la nube.",
           estado: null,
           sugerencias: []
         }
@@ -678,101 +765,263 @@ function MobileConsultaTab({ casetas = [], onRefresh }) {
   }
 
   return (
-    <div className="p-4 flex flex-col gap-3 min-h-[calc(100vh-9rem)]">
-      <div className="flex-1 space-y-3">
-        {messages.map((m, idx) => (
-          <div
-            key={idx}
-            className={`rounded-2xl p-3 text-xs space-y-1.5 max-w-[90%] ${
-              m.role === "user"
-                ? "ml-auto bg-sky-500 text-slate-950 font-semibold"
-                : "bg-slate-900 border border-slate-800 text-slate-100"
-            }`}
+    <div className="p-3.5 flex flex-col gap-3 min-h-[calc(100vh-8.5rem)]">
+      {/* Cabecera compacta del Agente Móvil + Accesos rápidos */}
+      <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-2.5 space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-bold text-white flex items-center gap-1.5">
+            <Sparkles className="w-4 h-4 text-sky-400" />
+            Agente IA de Placas y Peaje
+          </span>
+          <button
+            onClick={() => setMessages([INITIAL_AGENT_MSG])}
+            className="text-[11px] text-slate-400 hover:text-white flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-800/80"
           >
-            {m.image && <img src={m.image} alt="Placa" className="max-h-36 rounded-xl" />}
-            {m.estado && (
-              <span
-                className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full border ${
-                  STATE_BADGE[m.estado] || "bg-slate-800 text-slate-200 border-slate-700"
-                }`}
-              >
-                {m.estado} {m.placa ? `· ${m.placa}` : ""}
-              </span>
-            )}
-            <p className="whitespace-pre-line leading-relaxed">{m.text}</p>
-            {m.sugerencias?.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 pt-1">
-                {m.sugerencias.map((s) => (
-                  <button
-                    key={s}
-                    onClick={() => send(s)}
-                    className="font-mono bg-amber-500/20 text-amber-200 border border-amber-500/40 px-2 py-0.5 rounded-lg"
-                  >
-                    ¿{s}?
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        ))}
-        {sending && <p className="text-xs text-sky-400 animate-pulse">Consultando...</p>}
+            <Trash2 className="w-3 h-3" /> Limpiar
+          </button>
+        </div>
+
+        <div className="flex gap-1.5 overflow-x-auto pb-1 no-scrollbar">
+          {MOBILE_QUICK_PROMPTS.map((q) => (
+            <button
+              key={q.label}
+              disabled={sending}
+              onClick={() => send(q.prompt)}
+              className="shrink-0 text-[11px] font-semibold px-2.5 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-sky-300 active:bg-sky-500/20"
+            >
+              {q.label}
+            </button>
+          ))}
+        </div>
       </div>
 
-      <div className="card p-2.5 space-y-2">
+      {/* Historial de conversación con tarjetas estructuradas */}
+      <div className="flex-1 space-y-3">
+        {messages.map((m, idx) => {
+          const veh = m.datos?.vehiculo;
+          const ult = m.datos?.ultimo_paso;
+          const analisisVeh = m.datos?.analisis_vehiculo;
+          return (
+            <div
+              key={idx}
+              className={`rounded-2xl p-3 text-xs space-y-2 max-w-[94%] ${
+                m.role === "user"
+                  ? "ml-auto bg-sky-500 text-slate-950 font-semibold"
+                  : "bg-slate-900 border border-slate-800 text-slate-100"
+              }`}
+            >
+              {m.image && (
+                <img
+                  src={m.image}
+                  alt="Consulta móvil"
+                  className="max-h-40 rounded-xl border border-slate-700/60"
+                />
+              )}
+
+              {m.evidenceUrl && (
+                <img
+                  src={m.evidenceUrl}
+                  alt="Evidencia anotada"
+                  className="w-full max-h-48 object-contain rounded-xl border border-emerald-500/40 bg-slate-950"
+                />
+              )}
+
+              {(m.estado || m.motor || m.ocr?.confianza) && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {m.estado && (
+                    <span
+                      className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                        STATE_BADGE[m.estado] || "bg-slate-800 text-slate-200 border-slate-700"
+                      }`}
+                    >
+                      {m.estado} {m.placa ? `· ${m.placa}` : ""}
+                    </span>
+                  )}
+                  {m.ocr?.confianza > 0 && (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                      OCR {(m.ocr.confianza * 100).toFixed(0)}%
+                    </span>
+                  )}
+                  {m.motor && (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-violet-500/15 text-violet-300 border border-violet-500/30 ml-auto">
+                      {m.motor.startsWith("ollama:") ? "✨ LLM Ollama" : "🛡️ BD Verificada"}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              <p className="whitespace-pre-line leading-relaxed">{m.text}</p>
+
+              {/* Tarjeta visual de Vehículo Empadronado */}
+              {veh && (
+                <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-2.5 grid grid-cols-2 gap-1.5 text-[11px]">
+                  <div className="col-span-2 flex items-center justify-between border-b border-slate-800 pb-1">
+                    <span className="text-slate-400">Propietario</span>
+                    <strong className="text-white truncate max-w-[65%]">{veh.propietario}</strong>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block">Clase / Ejes</span>
+                    <strong className="text-sky-300">
+                      {formatVehicleClass(veh.categoria)} ({veh.ejes} ejes)
+                    </strong>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block">Saldo disponible</span>
+                    <strong className={veh.saldo > 0 ? "text-emerald-300" : "text-amber-300"}>
+                      Bs. {Number(veh.saldo).toFixed(2)}
+                    </strong>
+                  </div>
+                </div>
+              )}
+
+              {/* Tarjeta visual del Último Paso + miniatura de evidencia */}
+              {ult && (
+                <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-2.5 space-y-1.5 text-[11px]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-400 font-semibold">Último paso en peaje</span>
+                    <strong className="text-emerald-300">Bs. {Number(ult.monto).toFixed(2)}</strong>
+                  </div>
+                  <div className="text-slate-300">
+                    {ult.caseta} · {formatVehicleClass(ult.categoria)} · {ult.ejes} ejes ·{" "}
+                    {ult.pasajeros} pasaj.
+                  </div>
+                  {ult.imagen_url && (
+                    <img
+                      src={resolveImageUrl(ult.imagen_url)}
+                      alt="Última evidencia"
+                      onError={(e) => {
+                        e.currentTarget.style.display = "none";
+                      }}
+                      className="w-full max-h-36 object-cover rounded-lg border border-slate-800 mt-1"
+                    />
+                  )}
+                </div>
+              )}
+
+              {/* Detalle de análisis visual si fue foto de vehículo completo */}
+              {analisisVeh && analisisVeh.categoria_nombre && !veh && (
+                <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-2 text-[11px] text-slate-300">
+                  Detectado en foto: <strong>{analisisVeh.categoria_nombre}</strong> ·{" "}
+                  {analisisVeh.ejes} ejes ({analisisVeh.llantas_visibles ?? 0} llantas) ·{" "}
+                  {analisisVeh.pasajeros} pasaj.
+                </div>
+              )}
+
+              {m.sugerencias?.length > 0 && (
+                <div className="space-y-1 pt-1">
+                  <span className="text-[10px] text-amber-300 block">
+                    Coincidencias cercanas por OCR borroso (toca para consultar):
+                  </span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {m.sugerencias.map((s) => (
+                      <button
+                        key={s}
+                        onClick={() => send(s)}
+                        className="font-mono font-bold bg-amber-500/20 text-amber-200 border border-amber-500/40 px-2.5 py-1 rounded-lg"
+                      >
+                        ¿{s}?
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {sending && (
+          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl px-3 py-2 text-xs text-sky-400 animate-pulse inline-flex items-center gap-2">
+            <Bot className="w-4 h-4" /> Analizando con Super-OCR Deblur + Agente IA...
+          </div>
+        )}
+        <div ref={endRef} />
+      </div>
+
+      {/* Barra inferior de entrada multimodal (Cámara + Galería + Voz + Texto) */}
+      <div className="card p-2.5 space-y-2 sticky bottom-16 bg-slate-900/95 backdrop-blur border-slate-700">
         {preview && (
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center justify-between gap-2 bg-slate-950 p-2 rounded-xl border border-slate-800">
             <div className="relative inline-block">
-              <img src={preview} alt="Preview" className="h-16 rounded-lg" />
+              <img src={preview} alt="Preview" className="h-14 rounded-lg object-cover" />
               <button
-                onClick={() => {
-                  setFile(null);
-                  setPreview("");
-                }}
+                onClick={clearSelectedImage}
                 className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-0.5"
               >
                 <X className="w-3 h-3" />
               </button>
             </div>
-            <button
-              type="button"
-              disabled={sending}
-              onClick={sendAsPasoToWeb}
-              className="btn-primary text-[11px] py-2 px-3"
-            >
-              Registrar Paso en Web
-            </button>
+            <div className="flex flex-col gap-1 flex-1 items-end">
+              <span className="text-[10px] text-slate-400">
+                Envía con ➤ para consultar o registra el paso:
+              </span>
+              <button
+                type="button"
+                disabled={sending}
+                onClick={sendAsPasoToWeb}
+                className="btn-primary text-[11px] py-1.5 px-2.5"
+              >
+                📥 Registrar Paso en Web
+              </button>
+            </div>
           </div>
         )}
+
         <form
           onSubmit={(e) => {
             e.preventDefault();
             send();
           }}
-          className="flex gap-2"
+          className="flex items-center gap-1.5"
         >
-          <label className="btn-secondary px-3 py-2 cursor-pointer">
-            <Camera className="w-4 h-4" />
+          <label
+            className="btn-secondary p-2.5 cursor-pointer shrink-0"
+            title="Tomar foto con cámara"
+          >
+            <Camera className="w-4 h-4 text-sky-400" />
             <input
-              ref={fileRef}
+              ref={camInputRef}
               type="file"
               accept="image/*"
               capture="environment"
               className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (!f) return;
-                setFile(f);
-                setPreview(URL.createObjectURL(f));
-              }}
+              onChange={handleSelectImage}
             />
           </label>
+
+          <label
+            className="btn-secondary p-2.5 cursor-pointer shrink-0"
+            title="Elegir foto de galería"
+          >
+            <ImageIcon className="w-4 h-4 text-emerald-400" />
+            <input
+              ref={galInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleSelectImage}
+            />
+          </label>
+
+          <button
+            type="button"
+            onClick={toggleVoiceDictation}
+            title="Dictar placa o consulta por voz"
+            className={`p-2.5 rounded-xl border transition shrink-0 ${
+              listening
+                ? "bg-red-500 text-white border-red-400 animate-pulse"
+                : "bg-slate-800 text-slate-300 border-slate-700"
+            }`}
+          >
+            {listening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+          </button>
+
           <input
-            className="input-dark flex-1 text-xs"
-            placeholder="Placa (ej. 2481-KLM)..."
+            className="input-dark flex-1 text-xs min-w-0 py-2.5"
+            placeholder={listening ? "Escuchando voz..." : "Placa o pregunta..."}
             value={input}
             onChange={(e) => setInput(e.target.value)}
           />
-          <button type="submit" disabled={sending} className="btn-primary px-3">
+
+          <button type="submit" disabled={sending} className="btn-primary p-2.5 shrink-0">
             <Send className="w-4 h-4" />
           </button>
         </form>

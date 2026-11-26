@@ -35,7 +35,7 @@ except Exception:
 
 logger = logging.getLogger("peaje.inferencia")
 
-PIPELINE_VERSION = "3.1-yoloe-precision"
+PIPELINE_VERSION = "3.2-deblur-superocr"
 
 CLASE_NOMBRES = {
     "auto": "Vehículo particular (Auto)",
@@ -76,6 +76,8 @@ PROMPTS_LLANTA = ["wheel", "tire", "car wheel"]
 PROMPTS_LLANTA_DEDICADO = ["wheel", "tire", "car wheel", "truck tire", "vehicle wheel"]
 PROMPTS_LLANTA_SET = set(PROMPTS_LLANTA_DEDICADO)
 PROMPTS_PERSONA = ["person"]
+PROMPTS_PLACA = ["license plate", "number plate"]
+PROMPTS_PLACA_SET = set(PROMPTS_PLACA)
 
 KPT_NOMBRES = ["centro", "contacto", "superior", "izquierda", "derecha"]
 KPT_COLORES_BGR = [
@@ -134,6 +136,70 @@ CATEGORY_ALIASES = {
 IGNORED_OCR_TOKENS = ("ARGENTINA", "MERCOSUR", "BOLIVIA", "CHILE", "PLACA", "PERU", "BOL")
 BO_PLATE_RE = re.compile(r"^\d{3,4}[A-Z]{3}$")
 STD_PLATE_RE = re.compile(r"^[A-Z0-9]{5,8}$")
+
+LETTER_TO_DIGIT_POS = {
+    "O": "0",
+    "Q": "0",
+    "D": "0",
+    "I": "1",
+    "L": "1",
+    "Z": "2",
+    "S": "5",
+    "G": "6",
+    "B": "8",
+}
+DIGIT_TO_LETTER_POS = {
+    "0": "O",
+    "1": "I",
+    "2": "Z",
+    "4": "A",
+    "5": "S",
+    "6": "G",
+    "8": "B",
+}
+
+
+def correct_bolivian_plate_positions(cleaned: str) -> str:
+    """
+    Corrige confusiones dígito<->letra en placas borrosas bolivianas ([3-4 dígitos] + [3 letras]),
+    p. ej. '2534R15' -> '2534RIS' o 'S2B0YIN' -> '5280YIN', sin alterar formatos extranjeros.
+    """
+    if not cleaned or BO_PLATE_RE.match(cleaned):
+        return cleaned
+    if len(cleaned) not in (6, 7):
+        return cleaned
+    num_len = 3 if len(cleaned) == 6 else 4
+    prefix, suffix = cleaned[:num_len], cleaned[num_len:]
+    digits_in_prefix = sum(c.isdigit() for c in prefix)
+    alphas_in_suffix = sum(c.isalpha() for c in suffix)
+    if digits_in_prefix < (num_len - 1) and alphas_in_suffix < 2:
+        return cleaned
+
+    new_prefix = []
+    subs = 0
+    for c in prefix:
+        if c.isdigit():
+            new_prefix.append(c)
+        elif c in LETTER_TO_DIGIT_POS:
+            new_prefix.append(LETTER_TO_DIGIT_POS[c])
+            subs += 1
+        else:
+            return cleaned
+
+    new_suffix = []
+    for c in suffix:
+        if c.isalpha():
+            new_suffix.append(c)
+        elif c in DIGIT_TO_LETTER_POS:
+            new_suffix.append(DIGIT_TO_LETTER_POS[c])
+            subs += 1
+        else:
+            return cleaned
+
+    candidate = "".join(new_prefix) + "".join(new_suffix)
+    if subs <= 2 and BO_PLATE_RE.match(candidate):
+        return candidate
+    return cleaned
 
 
 def normalize_plate(raw_text: str) -> str:
@@ -414,7 +480,12 @@ class TollInferencePipeline:
             self.model_status["YOLOE_unificado"] = {"loaded": False, "error": "YOLOE no disponible"}
             return
         try:
-            scene_names = list(PROMPTS_VEHICULO.keys()) + PROMPTS_LLANTA + PROMPTS_PERSONA
+            scene_names = (
+                list(PROMPTS_VEHICULO.keys())
+                + PROMPTS_LLANTA
+                + PROMPTS_PERSONA
+                + PROMPTS_PLACA
+            )
             m_scene = YOLOE(self.yoloe_weight)
             m_scene.set_classes(scene_names, m_scene.get_text_pe(scene_names))
             self.yoloe_scene = m_scene
@@ -469,63 +540,168 @@ class TollInferencePipeline:
         }
 
     # ------------------------------------------------------------------
-    # M1: Detección ajustada de placa blanca + OCR multi-ángulo
+    # M1: Detección YOLOE + CV y Super-OCR Deblur para placas borrosas
     # ------------------------------------------------------------------
-    def _preprocess_plate_crop(self, crop: np.ndarray) -> np.ndarray:
+    def _estimate_sharpness(self, gray: np.ndarray) -> float:
+        if gray is None or gray.size == 0:
+            return 0.0
+        return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+    def _deskew_plate_poly(self, image_bgr: np.ndarray, poly: np.ndarray) -> Optional[np.ndarray]:
+        if poly is None or len(poly) < 4:
+            return None
+        rect = cv2.minAreaRect(poly.astype(np.float32))
+        (_cx, _cy), (rw, rh), angle = rect
+        if rw < 8 or rh < 8:
+            return None
+        box_pts = cv2.boxPoints(rect).astype(np.float32)
+        s = box_pts.sum(axis=1)
+        diff = np.diff(box_pts, axis=1).reshape(-1)
+        tl = box_pts[np.argmin(s)]
+        br = box_pts[np.argmax(s)]
+        tr = box_pts[np.argmin(diff)]
+        bl = box_pts[np.argmax(diff)]
+        w_top = float(np.linalg.norm(tr - tl))
+        w_bot = float(np.linalg.norm(br - bl))
+        h_left = float(np.linalg.norm(bl - tl))
+        h_right = float(np.linalg.norm(br - tr))
+        max_w = int(max(w_top, w_bot))
+        max_h = int(max(h_left, h_right))
+        if max_w < 16 or max_h < 10:
+            return None
+        if max_h > max_w * 1.15:
+            return None
+        dst = np.array(
+            [[0, 0], [max_w - 1, 0], [max_w - 1, max_h - 1], [0, max_h - 1]], dtype=np.float32
+        )
+        M = cv2.getPerspectiveTransform(np.array([tl, tr, br, bl], dtype=np.float32), dst)
+        return cv2.warpPerspective(
+            image_bgr, M, (max_w, max_h), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REPLICATE
+        )
+
+    def _build_deblur_variants(self, crop: np.ndarray) -> Tuple[List[np.ndarray], bool]:
+        """
+        Construye variantes restauradas (Lanczos4 4x + borde protector + Unsharp Mask + Deconvolución
+        Laplaciana + Umbral Adaptativo) para leer placas borrosas, lejanas o con movimiento.
+        """
         if crop is None or crop.size == 0:
-            return crop
+            return [], False
         h, w = crop.shape[:2]
-        if w < 300:
-            scale = max(2.2, 320.0 / max(w, 1))
-            crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if len(crop.shape) == 3 else crop
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-        enhanced = clahe.apply(gray)
-        denoise = cv2.bilateralFilter(enhanced, 5, 40, 40)
-        kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
-        return cv2.filter2D(denoise, -1, kernel)
+        target_w = 440.0
+        if w < target_w or h < 110:
+            scale = min(5.5, max(target_w / max(w, 1), 115.0 / max(h, 1)))
+            crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_LANCZOS4)
+
+        # Borde replicado para que EasyOCR nunca recorte el primer/último carácter pegado al marco
+        crop_padded = cv2.copyMakeBorder(crop, 14, 14, 18, 18, cv2.BORDER_REPLICATE)
+        gray = (
+            cv2.cvtColor(crop_padded, cv2.COLOR_BGR2GRAY)
+            if len(crop_padded.shape) == 3
+            else crop_padded
+        )
+        sharpness = self._estimate_sharpness(gray)
+        is_blurry = sharpness < 165.0
+
+        # Estiramiento suave de percentiles (2%..98%) para recuperar contraste en fotos lavadas/borrosas
+        p2, p98 = np.percentile(gray, (2, 98))
+        if p98 - p2 > 12:
+            stretched = np.clip((gray.astype(np.float32) - p2) * (255.0 / (p98 - p2)), 0, 255).astype(
+                np.uint8
+            )
+        else:
+            stretched = gray
+
+        # Variante 1: CLAHE + Unsharp Mask (óptima general y desenfoque leve/medio)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(stretched)
+        blur_g = cv2.GaussianBlur(clahe, (0, 0), sigmaX=1.7)
+        v1_unsharp = cv2.addWeighted(clahe, 1.85, blur_g, -0.85, 0)
+        v1_unsharp = cv2.bilateralFilter(v1_unsharp, 5, 35, 35)
+
+        # Variante 2: Deconvolución espacial fuerte para desenfoque de movimiento / foco blando
+        k_deblur = np.array(
+            [
+                [-1, -1, -1, -1, -1],
+                [-1,  2,  2,  2, -1],
+                [-1,  2,  8,  2, -1],
+                [-1,  2,  2,  2, -1],
+                [-1, -1, -1, -1, -1],
+            ],
+            dtype=np.float32,
+        ) / 8.0
+        v2_strong = cv2.filter2D(clahe, -1, k_deblur)
+
+        # Variante 3: Lanczos limpio (evita halos si la imagen ya tenía ruido JPEG)
+        v3_clean = stretched
+
+        # Variante 4: Binarización adaptativa suave para sombras duras o placas sucias
+        v4_adapt = cv2.adaptiveThreshold(
+            cv2.GaussianBlur(stretched, (3, 3), 0),
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            35,
+            8,
+        )
+
+        if is_blurry:
+            return [v1_unsharp, v2_strong, v3_clean, v4_adapt], True
+        return [v1_unsharp, v3_clean, v2_strong], False
 
     def _extract_plate_from_ocr_text(self, raw_text: str) -> str:
         cleaned_full = normalize_plate(raw_text)
-        if BO_PLATE_RE.match(cleaned_full):
-            return cleaned_full
+        if not cleaned_full:
+            return ""
+        corrected_full = correct_bolivian_plate_positions(cleaned_full)
+        if BO_PLATE_RE.match(corrected_full):
+            return corrected_full
+        # Buscar sub-secuencia de 7 o 6 caracteres corregible a placa boliviana (ej. encabezado pegado)
+        for length in (7, 6):
+            if len(cleaned_full) >= length:
+                for idx in range(0, len(cleaned_full) - length + 1):
+                    sub = cleaned_full[idx : idx + length]
+                    sub_corr = correct_bolivian_plate_positions(sub)
+                    if BO_PLATE_RE.match(sub_corr):
+                        return sub_corr
         m_bo = re.search(r"\d{3,4}[A-Z]{3}", cleaned_full)
         if m_bo:
             return m_bo.group(0)
         m_alt = re.search(r"[A-Z]{2,3}\d{3,4}[A-Z]?", cleaned_full)
         if m_alt:
             return m_alt.group(0)
-        return cleaned_full if len(cleaned_full) <= 8 else cleaned_full[:8]
+        return corrected_full if len(corrected_full) <= 8 else corrected_full[:8]
 
-    def _run_ocr_single(self, img: np.ndarray) -> Tuple[str, str, float]:
-        if self.ocr_reader is None or img is None or img.size == 0:
+    def _run_ocr_on_matrix(self, mat: np.ndarray) -> Tuple[str, str, float]:
+        if self.ocr_reader is None or mat is None or mat.size == 0:
             return "", "", 0.0
-        processed = self._preprocess_plate_crop(img)
         results = self.ocr_reader.readtext(
-            processed,
+            mat,
             allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789- ",
             detail=1,
             paragraph=False,
-            text_threshold=0.45,
-            low_text=0.28,
-            contrast_ths=0.1,
-            adjust_contrast=0.7,
+            text_threshold=0.35,
+            low_text=0.22,
+            contrast_ths=0.08,
+            adjust_contrast=0.75,
+            mag_ratio=1.5,
         )
         if not results:
             return "", "", 0.0
 
         best = ("", "", 0.0, 0.0)
-        results_sorted = sorted(results, key=lambda item: item[0][0][0])
+        # Ordenar por línea vertical aproximada y luego izquierda->derecha
+        results_sorted = sorted(results, key=lambda item: (round(item[0][0][1] / 28.0), item[0][0][0]))
         parts: List[str] = []
         confs: List[float] = []
         for _box, text, conf in results_sorted:
-            extracted = self._extract_plate_from_ocr_text(text)
-            if not extracted:
+            t_clean = text.strip()
+            if not t_clean:
                 continue
-            sc = plate_quality_score(extracted, float(conf))
-            if sc > best[3]:
-                best = (extracted, text.strip(), float(conf), sc)
-            parts.append(text.strip())
+            extracted = self._extract_plate_from_ocr_text(t_clean)
+            if extracted:
+                sc = plate_quality_score(extracted, float(conf))
+                if sc > best[3]:
+                    best = (extracted, t_clean, float(conf), sc)
+            parts.append(t_clean)
             confs.append(float(conf))
 
         if parts:
@@ -537,6 +713,54 @@ class TollInferencePipeline:
                 best = (extracted_joined, raw_joined, avg_conf, sc_joined)
 
         return best[0], best[1], round(best[2], 4)
+
+    def _run_multi_angle_ocr(self, crop: np.ndarray) -> Tuple[str, str, float]:
+        """Ejecuta restauración multi-variante (deblur) + votación por consenso y ángulos."""
+        if crop is None or crop.size == 0:
+            return "", "", 0.0
+
+        votes: Dict[str, Dict[str, Any]] = {}
+
+        def _register(norm: str, raw: str, conf: float) -> float:
+            if not norm:
+                return 0.0
+            sc = plate_quality_score(norm, conf)
+            entry = votes.get(norm)
+            if entry is None:
+                votes[norm] = {"raw": raw, "max_conf": conf, "best_sc": sc, "hits": 1}
+            else:
+                entry["hits"] += 1
+                if conf > entry["max_conf"]:
+                    entry["max_conf"] = conf
+                    entry["raw"] = raw
+                # Bonificación por consenso entre múltiples filtros deblur
+                entry["best_sc"] = max(entry["best_sc"], sc) + 0.12
+            return votes[norm]["best_sc"]
+
+        variants_0, is_blurry = self._build_deblur_variants(crop)
+        for idx, mat in enumerate(variants_0):
+            norm, raw, conf = self._run_ocr_on_matrix(mat)
+            sc = _register(norm, raw, conf)
+            # Salida rápida si ya es una placa boliviana nítida de alta confianza
+            if idx == 0 and not is_blurry and BO_PLATE_RE.match(norm) and conf >= 0.85:
+                return norm, raw, conf
+            if BO_PLATE_RE.match(norm) and conf >= 0.88 and votes[norm]["hits"] >= 2:
+                return norm, votes[norm]["raw"], round(votes[norm]["max_conf"], 4)
+
+        # Si sigue dudosa o inclinada, probar rotación fina sobre la mejor variante restaurada
+        base_for_rot = variants_0[0] if variants_0 else crop
+        for angle in (-11.0, 11.0, -21.0, 21.0):
+            rotated = rotate_image_bound(base_for_rot, angle)
+            norm, raw, conf = self._run_ocr_on_matrix(rotated)
+            _register(norm, raw, conf)
+            if BO_PLATE_RE.match(norm) and conf >= 0.84:
+                break
+
+        if not votes:
+            return "", "", 0.0
+
+        winner_norm, winner_info = max(votes.items(), key=lambda kv: kv[1]["best_sc"])
+        return winner_norm, winner_info["raw"], round(float(winner_info["max_conf"]), 4)
 
     def _find_plate_candidates_cv(self, image_bgr: np.ndarray) -> List[Tuple[np.ndarray, List[int]]]:
         candidates: List[Tuple[np.ndarray, List[int]]] = []
@@ -593,22 +817,11 @@ class TollInferencePipeline:
                 break
         return candidates
 
-    def _run_multi_angle_ocr(self, crop: np.ndarray) -> Tuple[str, str, float]:
-        best = ("", "", 0.0, 0.0)
-        for angle in (0.0, -12.0, 12.0, -22.0, 22.0):
-            rotated = rotate_image_bound(crop, angle)
-            norm, raw, conf = self._run_ocr_single(rotated)
-            sc = plate_quality_score(norm, conf)
-            if sc > best[3]:
-                best = (norm, raw, conf, sc)
-            if BO_PLATE_RE.match(norm) and conf >= 0.78:
-                break
-        return best[0], best[1], best[2]
-
     def infer_plate_only(
         self,
         image_bgr: np.ndarray,
         vehicle_bbox: Optional[List[int]] = None,
+        yoloe_plates: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         t0 = time.perf_counter()
         h, w = image_bgr.shape[:2]
@@ -616,30 +829,103 @@ class TollInferencePipeline:
         det_conf = 0.0
         best_norm, best_raw, best_ocr_conf, best_score = "", "", 0.0, 0.0
 
-        if self.m1_plates is not None:
-            preds = self.m1_plates.predict(source=image_bgr, conf=0.20, device=self.device, verbose=False)
+        # 0. Si se invoca directo (/infer/placa en Agente), localizar placa y vehículo con YOLOE (resiste desenfoque fuerte)
+        if yoloe_plates is None and self.yoloe_scene is not None:
+            yoloe_plates = []
+            rp = self.yoloe_scene.predict(
+                image_bgr, conf=0.06, imgsz=IMGSZ_YOLOE, device=self.device, verbose=False
+            )[0]
+            if len(rp.boxes) > 0:
+                clases = rp.boxes.cls.cpu().numpy().astype(int)
+                confs = rp.boxes.conf.cpu().numpy()
+                cajas = rp.boxes.xyxy.cpu().numpy()
+                polis = rp.masks.xy if rp.masks is not None else [np.zeros((0, 2))] * len(clases)
+                best_veh_area = 0.0
+                for c, s, b, poly in zip(clases, confs, cajas, polis):
+                    nombre = rp.names[c]
+                    bl = [float(v) for v in b.tolist()]
+                    if nombre in PROMPTS_PLACA_SET and float(s) >= 0.06:
+                        yoloe_plates.append(
+                            {
+                                "conf": float(s),
+                                "box": bl,
+                                "poly": poly.astype(np.int32) if len(poly) >= 4 else None,
+                            }
+                        )
+                    elif vehicle_bbox is None and nombre in PROMPTS_VEHICULO and float(s) >= 0.20:
+                        area_v = (bl[2] - bl[0]) * (bl[3] - bl[1]) * float(s)
+                        if area_v > best_veh_area:
+                            best_veh_area = area_v
+                            vehicle_bbox = [int(v) for v in bl]
+
+        # 1. Evaluar candidatos detectados por YOLOE (con rectificación de perspectiva 4 puntos + recorte directo)
+        if yoloe_plates:
+            plates_sorted = sorted(yoloe_plates, key=lambda d: -d["conf"])
+            if vehicle_bbox is not None:
+                vx1, vy1, vx2, vy2 = vehicle_bbox
+                vw, vh = max(1, vx2 - vx1), max(1, vy2 - vy1)
+                in_veh = [
+                    p
+                    for p in plates_sorted
+                    if (vx1 - 0.08 * vw) <= (p["box"][0] + p["box"][2]) / 2.0 <= (vx2 + 0.08 * vw)
+                    and (vy1 + 0.25 * vh) <= (p["box"][1] + p["box"][3]) / 2.0 <= (vy2 + 0.08 * vh)
+                ]
+                if in_veh:
+                    plates_sorted = in_veh + [p for p in plates_sorted if p not in in_veh]
+
+            for p_cand in plates_sorted[:4]:
+                px1, py1, px2, py2 = [int(round(v)) for v in p_cand["box"]]
+                pad_x = max(4, int((px2 - px1) * 0.12))
+                pad_y = max(4, int((py2 - py1) * 0.16))
+                cx1, cy1 = max(0, px1 - pad_x), max(0, py1 - pad_y)
+                cx2, cy2 = min(w, px2 + pad_x), min(h, py2 + pad_y)
+
+                crops_to_try = []
+                warped = self._deskew_plate_poly(image_bgr, p_cand.get("poly"))
+                if warped is not None and warped.size > 0:
+                    crops_to_try.append(warped)
+                if cx2 > cx1 and cy2 > cy1:
+                    crops_to_try.append(image_bgr[cy1:cy2, cx1:cx2])
+
+                for sub_crop in crops_to_try:
+                    norm, raw, conf = self._run_multi_angle_ocr(sub_crop)
+                    sc = plate_quality_score(norm, conf)
+                    if sc > best_score:
+                        best_norm, best_raw, best_ocr_conf, best_score = norm, raw, conf, sc
+                        det_conf = max(det_conf, float(p_cand["conf"]))
+                        bbox = [cx1, cy1, cx2, cy2]
+                    if BO_PLATE_RE.match(best_norm) and best_ocr_conf >= 0.84:
+                        break
+                if BO_PLATE_RE.match(best_norm) and best_ocr_conf >= 0.84:
+                    break
+
+        # 2. Modelo custom M1 si está cargado
+        if best_score < 1.35 and self.m1_plates is not None:
+            preds = self.m1_plates.predict(source=image_bgr, conf=0.18, device=self.device, verbose=False)
             if preds and len(preds[0].boxes) > 0:
                 best_idx = int(torch.argmax(preds[0].boxes.conf).item())
                 box = preds[0].boxes[best_idx]
-                det_conf = float(box.conf.item())
+                m1_c = float(box.conf.item())
                 x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
-                pad_x, pad_y = int((x2 - x1) * 0.08), int((y2 - y1) * 0.12)
+                pad_x, pad_y = int((x2 - x1) * 0.10), int((y2 - y1) * 0.14)
                 x1, y1 = max(0, x1 - pad_x), max(0, y1 - pad_y)
                 x2, y2 = min(w, x2 + pad_x), min(h, y2 + pad_y)
-                bbox = [x1, y1, x2, y2]
                 norm, raw, conf = self._run_multi_angle_ocr(image_bgr[y1:y2, x1:x2])
                 sc = plate_quality_score(norm, conf)
                 if sc > best_score:
                     best_norm, best_raw, best_ocr_conf, best_score = norm, raw, conf, sc
+                    det_conf = max(det_conf, m1_c)
+                    bbox = [x1, y1, x2, y2]
 
-        if best_score < 1.15:
+        # 3. Candidatos morfológicos HSV + BlackHat + Zoom en parachoques para imágenes muy borrosas
+        if best_score < 1.25:
             roi = image_bgr
             ox, oy = 0, 0
             if vehicle_bbox is not None:
                 vx1, vy1, vx2, vy2 = vehicle_bbox
-                ry1 = vy1 + int((vy2 - vy1) * 0.38)
-                roi = image_bgr[ry1:vy2, vx1:vx2]
-                ox, oy = vx1, ry1
+                ry1 = vy1 + int((vy2 - vy1) * 0.36)
+                roi = image_bgr[max(0, ry1) : min(h, vy2), max(0, vx1) : min(w, vx2)]
+                ox, oy = max(0, vx1), max(0, ry1)
             if roi.size > 0:
                 for cand_crop, cbox in self._find_plate_candidates_cv(roi):
                     norm, raw, conf = self._run_multi_angle_ocr(cand_crop)
@@ -647,23 +933,33 @@ class TollInferencePipeline:
                     if sc > best_score:
                         best_norm, best_raw, best_ocr_conf, best_score = norm, raw, conf, sc
                         bbox = [cbox[0] + ox, cbox[1] + oy, cbox[2] + ox, cbox[3] + oy]
-                    if BO_PLATE_RE.match(best_norm) and best_ocr_conf >= 0.80:
+                    if BO_PLATE_RE.match(best_norm) and best_ocr_conf >= 0.82:
                         break
-                if best_score < 0.85:
-                    norm, raw, conf = self._run_multi_angle_ocr(roi)
-                    sc = plate_quality_score(norm, conf)
-                    if sc > best_score:
-                        best_norm, best_raw, best_ocr_conf, best_score = norm, raw, conf, sc
-                        if bbox is None and vehicle_bbox is not None:
-                            bbox = [ox, oy, ox + roi.shape[1], oy + roi.shape[0]]
 
-        if best_score < 0.65:
+                # Si la placa es tan borrosa que no generó contorno cerrado, barrer franja central-baja del parachoques
+                if best_score < 0.95:
+                    rh_roi, rw_roi = roi.shape[:2]
+                    bumper_band = roi[int(rh_roi * 0.22) : int(rh_roi * 0.96), int(rw_roi * 0.12) : int(rw_roi * 0.88)]
+                    if bumper_band.size > 0:
+                        norm, raw, conf = self._run_multi_angle_ocr(bumper_band)
+                        sc = plate_quality_score(norm, conf)
+                        if sc > best_score:
+                            best_norm, best_raw, best_ocr_conf, best_score = norm, raw, conf, sc
+                            if bbox is None:
+                                bbox = [
+                                    ox + int(rw_roi * 0.12),
+                                    oy + int(rh_roi * 0.22),
+                                    ox + int(rw_roi * 0.88),
+                                    oy + int(rh_roi * 0.96),
+                                ]
+
+        if best_score < 0.70:
             norm, raw, conf = self._run_multi_angle_ocr(image_bgr)
             sc = plate_quality_score(norm, conf)
             if sc > best_score:
                 best_norm, best_raw, best_ocr_conf, best_score = norm, raw, conf, sc
 
-        final_conf = round(best_ocr_conf if det_conf == 0 else (0.3 * det_conf + 0.7 * best_ocr_conf), 4)
+        final_conf = round(best_ocr_conf if det_conf == 0 else (0.25 * det_conf + 0.75 * best_ocr_conf), 4)
         return {
             "placa": {
                 "texto": best_norm,
@@ -729,14 +1025,36 @@ class TollInferencePipeline:
                 out.append({"conf": float(s), "box": gbox, "kps": kps})
         return out
 
+    def _enhance_cabin_for_passengers(self, cabin_bgr: np.ndarray) -> np.ndarray:
+        """
+        Realza siluetas borrosas u oscuras detrás del parabrisas/ventanas (LAB CLAHE + levantamiento
+        de sombras gamma + Unsharp Mask) sin alterar colores base para YOLOE.
+        """
+        if cabin_bgr is None or cabin_bgr.size == 0:
+            return cabin_bgr
+        h, w = cabin_bgr.shape[:2]
+        if w < 420:
+            scale = min(3.0, 480.0 / max(w, 1))
+            cabin_bgr = cv2.resize(cabin_bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        lab = cv2.cvtColor(cabin_bgr, cv2.COLOR_BGR2LAB)
+        l_ch, a_ch, b_ch = cv2.split(lab)
+        # Levantar sombras en vidrios polarizados / oscuros (gamma = 0.78)
+        lut = np.array([min(255, int(((i / 255.0) ** 0.78) * 255.0)) for i in range(256)], dtype=np.uint8)
+        l_lifted = cv2.LUT(l_ch, lut)
+        l_clahe = cv2.createCLAHE(clipLimit=3.4, tileGridSize=(8, 8)).apply(l_lifted)
+        merged = cv2.cvtColor(cv2.merge((l_clahe, a_ch, b_ch)), cv2.COLOR_LAB2BGR)
+        blur = cv2.GaussianBlur(merged, (0, 0), sigmaX=1.4)
+        return cv2.addWeighted(merged, 1.55, blur, -0.55, 0)
+
     def _analyze_scene_yoloe(
         self, image_bgr: np.ndarray
-    ) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    ) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
         H, W = image_bgr.shape[:2]
         img_area = float(H * W)
         vehiculos: List[Dict[str, Any]] = []
         llantas_raw: List[Dict[str, Any]] = []
         personas: List[Dict[str, Any]] = []
+        placas_yoloe: List[Dict[str, Any]] = []
 
         if self.yoloe_scene is not None:
             r = self.yoloe_scene.predict(
@@ -765,8 +1083,18 @@ class TollInferencePipeline:
                                 "poly": poly_int,
                             }
                         )
-                    elif nombre in PROMPTS_PERSONA and float(s) >= 0.25:
-                        personas.append({"conf": float(s), "box": box_list, "poly": poly_int})
+                    elif nombre in PROMPTS_PERSONA and float(s) >= 0.16:
+                        personas.append(
+                            {"conf": float(s), "box": box_list, "poly": poly_int, "from_cabin_zoom": False}
+                        )
+                    elif nombre in PROMPTS_PLACA_SET and float(s) >= 0.05:
+                        placas_yoloe.append(
+                            {
+                                "conf": float(s),
+                                "box": box_list,
+                                "poly": poly.astype(np.int32) if len(poly) >= 4 else None,
+                            }
+                        )
 
             vehiculos = nms_simple(vehiculos, 0.65)
             personas = nms_simple(personas, 0.55)
@@ -783,6 +1111,47 @@ class TollInferencePipeline:
             llantas_raw.extend(
                 self._extract_wheels_from_result(r, 0, 0, CONF_LLANTA_GLOBAL, v_box_ref)
             )
+
+            # PASADA DEDICADA EN CABINA MEJORADA (CLAHE + Deblur) PARA PASAJEROS BORROSOS / TRAS PARABRISAS
+            if principal is not None:
+                vx1, vy1, vx2, vy2 = principal["box"]
+                vw, vh = vx2 - vx1, vy2 - vy1
+                cab_x1 = max(0, int(vx1 + vw * 0.04))
+                cab_y1 = max(0, int(vy1 + vh * 0.02))
+                cab_x2 = min(W, int(vx2 - vw * 0.04))
+                cab_y2 = min(H, int(vy1 + vh * 0.68) if principal["clase"] != "moto" else int(vy2))
+                cabin_raw = image_bgr[cab_y1:cab_y2, cab_x1:cab_x2]
+                if cabin_raw.size > 0 and cabin_raw.shape[0] >= 36 and cabin_raw.shape[1] >= 36:
+                    cabin_enh = self._enhance_cabin_for_passengers(cabin_raw)
+                    sx = cabin_raw.shape[1] / float(cabin_enh.shape[1])
+                    sy = cabin_raw.shape[0] / float(cabin_enh.shape[0])
+                    rcab = self.yoloe_scene.predict(
+                        cabin_enh, conf=0.10, imgsz=640, device=self.device, verbose=False
+                    )[0]
+                    if len(rcab.boxes) > 0:
+                        c_cls = rcab.boxes.cls.cpu().numpy().astype(int)
+                        c_cnf = rcab.boxes.conf.cpu().numpy()
+                        c_box = rcab.boxes.xyxy.cpu().numpy()
+                        c_pol = rcab.masks.xy if rcab.masks is not None else [np.zeros((0, 2))] * len(c_cls)
+                        for cc, cs, cb, cpoly in zip(c_cls, c_cnf, c_box, c_pol):
+                            cname = rcab.names[cc]
+                            if cname in PROMPTS_PERSONA and float(cs) >= 0.10:
+                                gbx = [
+                                    float(cb[0] * sx + cab_x1),
+                                    float(cb[1] * sy + cab_y1),
+                                    float(cb[2] * sx + cab_x1),
+                                    float(cb[3] * sy + cab_y1),
+                                ]
+                                gpoly = None
+                                if len(cpoly) >= 3:
+                                    pts = cpoly.astype(np.float32).copy()
+                                    pts[:, 0] = pts[:, 0] * sx + cab_x1
+                                    pts[:, 1] = pts[:, 1] * sy + cab_y1
+                                    gpoly = pts.astype(np.int32)
+                                personas.append(
+                                    {"conf": float(cs), "box": gbx, "poly": gpoly, "from_cabin_zoom": True}
+                                )
+                personas = nms_simple(personas, 0.48)
 
             # PASADAS DEDICADAS DE LLANTAS (sin competencia con clases de vehículos):
             # 1) Escena completa con contexto global del vehículo + 2) Zoom en tren rodante a alta resolución
@@ -895,7 +1264,7 @@ class TollInferencePipeline:
                     filtradas_trafico.append(l)
                 llantas_limpias = filtradas_trafico
 
-        return principal, llantas_limpias, personas
+        return principal, llantas_limpias, personas, placas_yoloe
 
     # ------------------------------------------------------------------
     # M4: Filtrado estricto de pasajeros dentro de cabina (excluye transeúntes)
@@ -917,16 +1286,18 @@ class TollInferencePipeline:
 
         vehicle_mask_bin = np.zeros((img_h, img_w), dtype=np.uint8)
         if vehicle_poly is not None and len(vehicle_poly) >= 3:
-            cv2.fillPoly(vehicle_mask_bin, [vehicle_poly], 1)
+            # Usar hull convexo suave para sellar huecos de reflejo en parabrisas sin incluir la acera
+            hull = cv2.convexHull(vehicle_poly)
+            cv2.fillPoly(vehicle_mask_bin, [hull], 1)
         else:
             cv2.rectangle(vehicle_mask_bin, (vx1, vy1), (vx2, vy2), 1, -1)
 
         if categoria == "moto":
-            win_x1, win_x2 = vx1 + int(bw * 0.05), vx2 - int(bw * 0.05)
-            win_y1, win_y2 = max(0, vy1 - int(bh * 0.25)), vy2
+            win_x1, win_x2 = vx1 + int(bw * 0.04), vx2 - int(bw * 0.04)
+            win_y1, win_y2 = max(0, vy1 - int(bh * 0.28)), vy2
         else:
-            win_x1, win_x2 = vx1 + int(bw * 0.10), vx2 - int(bw * 0.10)
-            win_y1, win_y2 = vy1 + int(bh * 0.06), vy1 + int(bh * 0.62)
+            win_x1, win_x2 = vx1 + int(bw * 0.06), vx2 - int(bw * 0.06)
+            win_y1, win_y2 = vy1 + int(bh * 0.03), vy1 + int(bh * 0.66)
 
         def _mask_cov(gx1: int, gy1: int, gx2: int, gy2: int) -> float:
             cx1, cy1 = max(0, gx1), max(0, gy1)
@@ -937,19 +1308,20 @@ class TollInferencePipeline:
 
         def _is_pedestrian(gx1: int, gy1: int, gx2: int, gy2: int) -> bool:
             if categoria == "moto":
-                return _mask_cov(gx1, gy1, gx2, gy2) < 0.30
+                return _mask_cov(gx1, gy1, gx2, gy2) < 0.28
             pw, ph = max(gx2 - gx1, 1), max(gy2 - gy1, 1)
-            if gy2 > vy1 + bh * 0.68:
+            # Un transeúnte en la calle extiende las piernas hacia el suelo (debajo del 72% de la altura)
+            if gy2 > vy1 + bh * 0.72:
                 return True
-            if ph > bh * 0.50:
+            if ph > bh * 0.64:
                 return True
-            if gy1 < vy1 + bh * 0.02:
+            if gy1 < vy1 - bh * 0.02:
                 return True
-            if gx1 < vx1 + bw * 0.08 or gx2 > vx2 - bw * 0.08:
+            if gx1 < vx1 + bw * 0.04 or gx2 > vx2 - bw * 0.04:
                 return True
-            if _mask_cov(gx1, gy1, gx2, gy2) < 0.82:
+            if _mask_cov(gx1, gy1, gx2, gy2) < 0.72:
                 return True
-            if pw > bw * 0.48:
+            if pw > bw * 0.62:
                 return True
             return False
 
@@ -958,12 +1330,14 @@ class TollInferencePipeline:
 
         for p in personas_globales:
             gx1, gy1, gx2, gy2 = [int(v) for v in p["box"]]
-            if _is_pedestrian(gx1, gy1, gx2, gy2) or p["conf"] < 0.32:
+            min_p_conf = 0.11 if p.get("from_cabin_zoom") else 0.20
+            if _is_pedestrian(gx1, gy1, gx2, gy2) or p["conf"] < min_p_conf:
                 continue
             cx, cy = (gx1 + gx2) / 2.0, (gy1 + gy2) / 2.0
             if categoria != "moto" and not (win_x1 <= cx <= win_x2 and win_y1 <= cy <= win_y2):
                 continue
-            if any(math.hypot(cx - ox, cy - oy) < 28.0 for ox, oy in centers_seen):
+            min_sep = max(18.0, min(bw, bh) * 0.07)
+            if any(math.hypot(cx - ox, cy - oy) < min_sep for ox, oy in centers_seen):
                 continue
             centers_seen.append((cx, cy))
             if p.get("poly") is not None:
@@ -1079,7 +1453,7 @@ class TollInferencePipeline:
         H, W = image_bgr.shape[:2]
         img_area = float(H * W)
 
-        principal, llantas, personas = self._analyze_scene_yoloe(image_bgr)
+        principal, llantas, personas, placas_yoloe = self._analyze_scene_yoloe(image_bgr)
 
         if principal is not None:
             categoria = principal["clase"]
@@ -1114,7 +1488,9 @@ class TollInferencePipeline:
             vista = "sin_vehiculo"
             nota_ejes = "No se detectó vehículo completo"
 
-        m1_out = self.infer_plate_only(image_bgr, vehicle_bbox=v_box_int)
+        m1_out = self.infer_plate_only(
+            image_bgr, vehicle_bbox=v_box_int, yoloe_plates=placas_yoloe
+        )
         placa_info = m1_out["placa"]
 
         pasajeros, passenger_masks = self._filter_cabin_passengers(image_bgr, principal, personas)

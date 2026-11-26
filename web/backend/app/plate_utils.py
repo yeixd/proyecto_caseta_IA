@@ -17,8 +17,14 @@ from app.models import Caseta, Paso, Vehiculo
 OCR_CONFUSION_PAIRS = {
     ("O", "0"),
     ("0", "O"),
+    ("D", "0"),
+    ("0", "D"),
+    ("Q", "0"),
+    ("0", "Q"),
     ("I", "1"),
     ("1", "I"),
+    ("L", "1"),
+    ("1", "L"),
     ("B", "8"),
     ("8", "B"),
     ("S", "5"),
@@ -27,6 +33,12 @@ OCR_CONFUSION_PAIRS = {
     ("2", "Z"),
     ("G", "6"),
     ("6", "G"),
+    ("A", "4"),
+    ("4", "A"),
+    ("Y", "V"),
+    ("V", "Y"),
+    ("N", "M"),
+    ("M", "N"),
 }
 
 IGNORED_TOKENS = ("ARGENTINA", "MERCOSUR", "BOLIVIA", "CHILE", "PLACA", "PERU", "BOL")

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -10,15 +10,26 @@ import {
   View
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
-import { sendAgentQuery } from "../api";
+import { formatVehicleClass, sendAgentQuery, sendCasetaFrame } from "../api";
+
+const QUICK_PROMPTS = [
+  { label: "📊 Resumen hoy", prompt: "Dame el resumen del día y recaudación" },
+  { label: "🚨 Alertas", prompt: "Muéstrame las alertas activas pendientes" },
+  { label: "💰 Tarifas", prompt: "Cuáles son las tarifas vigentes por vehículo y ejes" },
+  { label: "🚗 Últimos pasos", prompt: "Muéstrame los últimos 5 pasos registrados" },
+  { label: "🔎 2481-KLM", prompt: "2481-KLM" }
+];
 
 export default function ConsultaScreen({ token }) {
+  const scrollRef = useRef(null);
   const [messages, setMessages] = useState([
     {
       role: "assistant",
-      text: "Modo Consulta activo. Escribe una placa (ej. 2481-KLM) o toma una foto de la placa para consultar su estado oficial.",
+      text: "Hola 👋 Soy tu Agente IA Móvil de Peaje.\n• Escribe una placa (ej. 2481-KLM), envía una foto (con Super-OCR para placas borrosas) o toca un acceso rápido.",
       estado: null,
-      sugerencias: []
+      sugerencias: [],
+      datos: null,
+      motor: null
     }
   ]);
   const [input, setInput] = useState("");
@@ -32,11 +43,48 @@ export default function ConsultaScreen({ token }) {
     if (!perm.granted) return;
 
     const result = useCamera
-      ? await ImagePicker.launchCameraAsync({ quality: 0.7 })
-      : await ImagePicker.launchImageLibraryAsync({ quality: 0.7 });
+      ? await ImagePicker.launchCameraAsync({ quality: 0.88 })
+      : await ImagePicker.launchImageLibraryAsync({ quality: 0.88 });
 
     if (!result.canceled && result.assets?.[0]?.uri) {
       setSelectedImage(result.assets[0].uri);
+    }
+  }
+
+  async function registerImageAsPaso() {
+    if (!selectedImage || sending) return;
+    const uri = selectedImage;
+    setSelectedImage(null);
+    setSending(true);
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", text: "Registrar paso en Panel Web", image: uri }
+    ]);
+    try {
+      const data = await sendCasetaFrame(token, uri, 1);
+      const p = data.paso;
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text: `✅ Registro #${p.id} enviado a la Página Web:\n• Placa: ${
+            p.placa_normalizada || "ILEGIBLE"
+          }\n• Clase: ${formatVehicleClass(p.categoria_detectada)}\n• Ejes: ${
+            p.ejes_detectados
+          }\n• Pasajeros: ${p.pasajeros}\n• Tarifa: Bs. ${Number(p.monto).toFixed(2)} (${p.estado})`,
+          estado: p.estado,
+          placa: p.placa_normalizada,
+          sugerencias: [],
+          motor: "caseta_en_vivo"
+        }
+      ]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", text: err.message, estado: null, sugerencias: [] }
+      ]);
+    } finally {
+      setSending(false);
     }
   }
 
@@ -62,7 +110,10 @@ export default function ConsultaScreen({ token }) {
           text: data.respuesta,
           estado: data.estado,
           placa: data.placa_normalizada,
-          sugerencias: data.sugerencias || []
+          sugerencias: data.sugerencias || [],
+          datos: data.datos || null,
+          ocr: data.ocr || null,
+          motor: data.motor || null
         }
       ]);
     } catch (err) {
@@ -77,7 +128,35 @@ export default function ConsultaScreen({ token }) {
 
   return (
     <View style={styles.container}>
-      <ScrollView style={styles.chat} contentContainerStyle={{ padding: 14, gap: 10 }}>
+      <View style={{ paddingHorizontal: 12, paddingTop: 10, paddingBottom: 4 }}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          {QUICK_PROMPTS.map((q) => (
+            <TouchableOpacity
+              key={q.label}
+              disabled={sending}
+              onPress={() => handleSend(q.prompt)}
+              style={{
+                backgroundColor: "#0f172a",
+                borderColor: "#1e293b",
+                borderWidth: 1,
+                paddingHorizontal: 11,
+                paddingVertical: 6,
+                borderRadius: 12,
+                marginRight: 8
+              }}
+            >
+              <Text style={{ color: "#38bdf8", fontSize: 12, fontWeight: "700" }}>{q.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      </View>
+
+      <ScrollView
+        ref={scrollRef}
+        onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
+        style={styles.chat}
+        contentContainerStyle={{ padding: 14, gap: 10 }}
+      >
         {messages.map((m, idx) => (
           <View
             key={idx}
@@ -86,10 +165,31 @@ export default function ConsultaScreen({ token }) {
             {m.image && <Image source={{ uri: m.image }} style={styles.previewImg} />}
             {m.estado ? (
               <Text style={styles.estadoBadge}>
-                {m.estado} {m.placa ? `· ${m.placa}` : ""}
+                {m.estado} {m.placa ? `· ${m.placa}` : ""}{" "}
+                {m.motor?.startsWith("ollama:") ? "· ✨ LLM" : ""}
               </Text>
             ) : null}
             <Text style={m.role === "user" ? styles.userText : styles.botText}>{m.text}</Text>
+            {m.datos?.vehiculo && (
+              <View
+                style={{
+                  marginTop: 8,
+                  padding: 8,
+                  borderRadius: 10,
+                  backgroundColor: "#020617",
+                  borderWidth: 1,
+                  borderColor: "#1e293b"
+                }}
+              >
+                <Text style={{ color: "#94a3b8", fontSize: 11 }}>
+                  Propietario: <Text style={{ color: "#fff", fontWeight: "700" }}>{m.datos.vehiculo.propietario}</Text>
+                </Text>
+                <Text style={{ color: "#38bdf8", fontSize: 11, marginTop: 2 }}>
+                  {formatVehicleClass(m.datos.vehiculo.categoria)} ({m.datos.vehiculo.ejes} ejes) · Saldo: Bs.{" "}
+                  {Number(m.datos.vehiculo.saldo).toFixed(2)}
+                </Text>
+              </View>
+            )}
             {m.sugerencias?.length > 0 && (
               <View style={styles.sugRow}>
                 <Text style={styles.sugLabel}>¿Quisiste decir:</Text>
@@ -107,10 +207,26 @@ export default function ConsultaScreen({ token }) {
 
       <View style={styles.inputArea}>
         {selectedImage && (
-          <View style={styles.selectedWrap}>
-            <Image source={{ uri: selectedImage }} style={styles.thumb} />
-            <TouchableOpacity onPress={() => setSelectedImage(null)}>
-              <Text style={{ color: "#f87171", fontSize: 12 }}>Quitar foto</Text>
+          <View style={[styles.selectedWrap, { justifyContent: "space-between" }]}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+              <Image source={{ uri: selectedImage }} style={styles.thumb} />
+              <TouchableOpacity onPress={() => setSelectedImage(null)}>
+                <Text style={{ color: "#f87171", fontSize: 12 }}>Quitar</Text>
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity
+              onPress={registerImageAsPaso}
+              disabled={sending}
+              style={{
+                backgroundColor: "#0284c7",
+                paddingHorizontal: 10,
+                paddingVertical: 6,
+                borderRadius: 8
+              }}
+            >
+              <Text style={{ color: "#fff", fontSize: 11, fontWeight: "700" }}>
+                Registrar Paso en Web
+              </Text>
             </TouchableOpacity>
           </View>
         )}

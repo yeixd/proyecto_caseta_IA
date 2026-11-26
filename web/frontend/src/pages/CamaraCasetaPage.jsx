@@ -35,7 +35,12 @@ export default function CamaraCasetaPage({ casetas, onRefresh }) {
     stopCamera();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: mode }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: {
+          facingMode: { ideal: mode },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          advanced: [{ focusMode: "continuous" }]
+        },
         audio: false
       });
       streamRef.current = stream;
@@ -82,7 +87,7 @@ export default function CamaraCasetaPage({ casetas, onRefresh }) {
       const ctx = canvas.getContext("2d");
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.75));
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.88));
       if (!blob) return;
 
       const fd = new FormData();
