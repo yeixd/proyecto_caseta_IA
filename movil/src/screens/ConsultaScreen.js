@@ -10,7 +10,7 @@ import {
   View
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
-import { formatVehicleClass, sendAgentQuery, sendCasetaFrame } from "../api";
+import { formatVehicleClass, getApiBaseUrl, sendAgentQuery, sendCasetaFrame } from "../api";
 
 const QUICK_PROMPTS = [
   { label: "📊 Resumen hoy", prompt: "Dame el resumen del día y recaudación" },
@@ -103,6 +103,7 @@ export default function ConsultaScreen({ token }) {
 
     try {
       const data = await sendAgentQuery(token, msgText, imgUri);
+      const baseUrl = await getApiBaseUrl();
       setMessages((prev) => [
         ...prev,
         {
@@ -112,6 +113,7 @@ export default function ConsultaScreen({ token }) {
           placa: data.placa_normalizada,
           sugerencias: data.sugerencias || [],
           datos: data.datos || null,
+          inferencia: data.inferencia ? { ...data.inferencia, baseUrl } : null,
           ocr: data.ocr || null,
           motor: data.motor || null
         }
@@ -163,6 +165,41 @@ export default function ConsultaScreen({ token }) {
             style={[styles.bubble, m.role === "user" ? styles.userBubble : styles.botBubble]}
           >
             {m.image && <Image source={{ uri: m.image }} style={styles.previewImg} />}
+            {m.inferencia?.imagen_url && m.inferencia?.baseUrl ? (
+              <Image
+                source={{
+                  uri: m.inferencia.imagen_url.startsWith("http")
+                    ? m.inferencia.imagen_url
+                    : `${m.inferencia.baseUrl}${m.inferencia.imagen_url}`
+                }}
+                style={{
+                  width: 240,
+                  height: 155,
+                  borderRadius: 10,
+                  marginBottom: 8,
+                  backgroundColor: "#020617"
+                }}
+                resizeMode="contain"
+              />
+            ) : null}
+            {m.inferencia ? (
+              <View
+                style={{
+                  marginBottom: 8,
+                  padding: 8,
+                  borderRadius: 10,
+                  backgroundColor: "#020617",
+                  borderWidth: 1,
+                  borderColor: "rgba(52,211,153,0.4)"
+                }}
+              >
+                <Text style={{ color: "#34d399", fontSize: 11, fontWeight: "700" }}>
+                  {formatVehicleClass(m.inferencia.categoria)} · {m.inferencia.ejes} ejes (
+                  {m.inferencia.llantas_visibles ?? 0} llantas) · {m.inferencia.pasajeros} pasaj. · Bs.{" "}
+                  {Number(m.inferencia.tarifa_bs || 0).toFixed(2)}
+                </Text>
+              </View>
+            ) : null}
             {m.estado ? (
               <Text style={styles.estadoBadge}>
                 {m.estado} {m.placa ? `· ${m.placa}` : ""}{" "}

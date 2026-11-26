@@ -674,6 +674,7 @@ async def agente_chat_multipart(
         mensaje=mensaje,
         image_bytes=img_bytes,
         filename=fname or "placa.jpg",
+        usuario_id=_user.id,
     )
 
 
@@ -691,7 +692,12 @@ async def agente_chat_json(
             img_bytes = base64.b64decode(raw_b64)
         except Exception:
             raise HTTPException(status_code=400, detail="image_b64 inválido")
-    return await run_conversational_agent(db=db, mensaje=payload.mensaje, image_bytes=img_bytes)
+    return await run_conversational_agent(
+        db=db,
+        mensaje=payload.mensaje,
+        image_bytes=img_bytes,
+        usuario_id=_user.id,
+    )
 
 
 # ----------------------------------------------------------------------

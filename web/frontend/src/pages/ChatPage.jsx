@@ -1,6 +1,20 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Bot, Camera, Send, Sparkles, User, X } from "lucide-react";
-import { api, compressImageForUpload } from "../api";
+import {
+  api,
+  compressImageForUpload,
+  formatVehicleClass,
+  resolveImageUrl,
+  VEHICLE_CLASS_COLORS
+} from "../api";
+
+const WEB_QUICK_PROMPTS = [
+  { label: "📊 Resumen hoy", prompt: "Dame el resumen del día y recaudación" },
+  { label: "🚨 Alertas activas", prompt: "Muéstrame las alertas activas pendientes" },
+  { label: "💰 Tarifas vigentes", prompt: "Cuáles son las tarifas vigentes por vehículo y ejes" },
+  { label: "🚗 Últimos pasos", prompt: "Muéstrame los últimos 5 pasos registrados" },
+  { label: "🔎 Placa 2481-KLM", prompt: "2481-KLM" }
+];
 
 const STATE_BADGE = {
   "Registrada y con paso": "bg-emerald-500/20 text-emerald-300 border-emerald-500/40",
@@ -10,11 +24,11 @@ const STATE_BADGE = {
   "Placa ilegible": "bg-amber-500/20 text-amber-300 border-amber-500/40"
 };
 
-export default function ChatPage() {
+export default function ChatPage({ onSelectImage, onRefresh }) {
   const [messages, setMessages] = useState([
     {
       role: "assistant",
-      text: "Hola, soy el Agente Conversacional de Control de Peaje. Escribe una placa (ej. 2481-KLM) o sube una fotografía de la placa para verificar su estado real en la base de datos.",
+      text: "Hola 👋 Soy el Agente Conversacional con Inferencia Visual M1–M4.\n• Sube la fotografía de cualquier vehículo para ejecutar la inferencia completa (placa, clase, llantas/ejes, pasajeros en cabina, auto-registro y tarifa).\n• O consulta placas, alertas, tarifas y resumen por texto.",
       estado: null,
       sugerencias: []
     }
@@ -24,6 +38,11 @@ export default function ChatPage() {
   const [preview, setPreview] = useState("");
   const [sending, setSending] = useState(false);
   const fileRef = useRef(null);
+  const endRef = useRef(null);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, sending]);
 
   function handleFileChange(e) {
     const f = e.target.files?.[0];
@@ -62,6 +81,9 @@ export default function ChatPage() {
       }
 
       const { data } = await api.post("/api/v1/agente/chat", fd);
+      if (data.inferencia) {
+        onRefresh?.();
+      }
       setMessages((prev) => [
         ...prev,
         {
@@ -70,6 +92,8 @@ export default function ChatPage() {
           estado: data.estado,
           placa: data.placa_normalizada,
           sugerencias: data.sugerencias || [],
+          datos: data.datos || null,
+          inferencia: data.inferencia || null,
           motor: data.motor
         }
       ]);
@@ -92,15 +116,29 @@ export default function ChatPage() {
 
   return (
     <div className="h-[calc(100vh-7rem)] flex flex-col gap-4">
-      <div>
-        <h2 className="text-2xl font-bold text-white flex items-center gap-2">
-          <Sparkles className="w-6 h-6 text-sky-400" />
-          Agente Conversacional de Placas
-        </h2>
-        <p className="text-sm text-slate-400">
-          Consultas por texto o imagen (M1 + OCR) con los 4 estados oficiales, normalización y
-          sugerencias OCR (O↔0, I↔1, B↔8, S↔5)
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-bold text-white flex items-center gap-2">
+            <Sparkles className="w-6 h-6 text-sky-400" />
+            Agente Conversacional con Inferencia Visual (M1–M4)
+          </h2>
+          <p className="text-sm text-slate-400">
+            Envía una foto del vehículo para inferencia completa (placa, clase, llantas/ejes y
+            pasajeros) o consulta por texto
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {WEB_QUICK_PROMPTS.map((q) => (
+            <button
+              key={q.label}
+              disabled={sending}
+              onClick={() => sendQuery(q.prompt)}
+              className="text-xs font-semibold px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-sky-300 hover:border-sky-500/40 transition"
+            >
+              {q.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="card flex-1 p-4 overflow-y-auto space-y-4">
@@ -116,7 +154,7 @@ export default function ChatPage() {
             )}
 
             <div
-              className={`max-w-2xl rounded-2xl px-4 py-3 text-sm space-y-2 ${
+              className={`max-w-2xl rounded-2xl px-4 py-3 text-sm space-y-3 ${
                 m.role === "user"
                   ? "bg-sky-500 text-slate-950 font-medium"
                   : "bg-slate-950 border border-slate-800 text-slate-100"
@@ -125,9 +163,68 @@ export default function ChatPage() {
               {m.image && (
                 <img
                   src={m.image}
-                  alt="Placa consultada"
+                  alt="Imagen enviada"
                   className="max-h-44 rounded-xl border border-slate-700"
                 />
+              )}
+
+              {/* Imagen anotada de la inferencia visual M1+M2+M3+M4 */}
+              {m.inferencia?.imagen_url && (
+                <div className="space-y-2">
+                  <img
+                    src={resolveImageUrl(m.inferencia.imagen_url)}
+                    alt="Inferencia visual anotada"
+                    onClick={() => onSelectImage?.(resolveImageUrl(m.inferencia.imagen_url))}
+                    className="w-full max-h-72 object-contain rounded-xl border border-emerald-500/40 bg-slate-900 cursor-pointer hover:opacity-95"
+                  />
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs bg-slate-900/90 border border-slate-800 rounded-xl p-3">
+                    <div className="col-span-2 flex items-center justify-between">
+                      <span className="text-slate-400">Clase (M2):</span>
+                      <span
+                        className={`px-2 py-0.5 rounded-full font-bold border ${
+                          VEHICLE_CLASS_COLORS[m.inferencia.categoria] || VEHICLE_CLASS_COLORS.auto
+                        }`}
+                      >
+                        {formatVehicleClass(m.inferencia.categoria)}
+                      </span>
+                    </div>
+                    <div className="col-span-2 flex items-center justify-between">
+                      <span className="text-slate-400">Placa (M1):</span>
+                      <strong className="font-mono text-white">
+                        {m.inferencia.placa || "ILEGIBLE"} (
+                        {((m.inferencia.confianza_ocr || 0) * 100).toFixed(0)}%)
+                      </strong>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block">Ejes / Llantas (M3)</span>
+                      <strong className="text-white">
+                        {m.inferencia.ejes} ejes ({m.inferencia.llantas_visibles ?? 0} llantas)
+                      </strong>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block">Pasajeros (M4)</span>
+                      <strong className="text-cyan-300">{m.inferencia.pasajeros}</strong>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block">Tarifa cobrada</span>
+                      <strong className="text-emerald-300">
+                        Bs. {Number(m.inferencia.tarifa_bs || 0).toFixed(2)}
+                      </strong>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block">Latencia GPU</span>
+                      <strong className="text-slate-200">
+                        {Math.round(m.inferencia.latencia_ms || 0)} ms
+                      </strong>
+                    </div>
+                    {m.inferencia.propietario && (
+                      <div className="col-span-2 sm:col-span-4 border-t border-slate-800 pt-1.5 flex items-center justify-between">
+                        <span className="text-slate-400">Propietario / Sindicato:</span>
+                        <strong className="text-amber-200">{m.inferencia.propietario}</strong>
+                      </div>
+                    )}
+                  </div>
+                </div>
               )}
 
               {m.estado && (
@@ -183,9 +280,10 @@ export default function ChatPage() {
         ))}
         {sending && (
           <div className="text-xs text-sky-400 animate-pulse pl-11">
-            Consultando base de datos e inferencia...
+            Ejecutando inferencia visual M1–M4 y consultando base de datos...
           </div>
         )}
+        <div ref={endRef} />
       </div>
 
       {/* Input */}

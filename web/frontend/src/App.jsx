@@ -280,7 +280,9 @@ export default function App() {
         {activeTab === "alertas" && (
           <AlertasPage alertas={alertas} onRefresh={fetchInitialData} onSelectImage={setModalImage} />
         )}
-        {activeTab === "chat" && <ChatPage />}
+        {activeTab === "chat" && (
+          <ChatPage onSelectImage={setModalImage} onRefresh={fetchInitialData} />
+        )}
         {activeTab === "estado" && <EstadoPage />}
       </main>
 

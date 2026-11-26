@@ -173,6 +173,39 @@ def test_four_agent_states_and_frame_flow():
     assert auto_body["paso"]["auto_registrado"] is True
     assert "—" in auto_body["paso"]["propietario"]  # Nombre de persona + Sindicato/Cooperativa
 
+    # Verificar que el Agente Conversacional ejecuta inferencia completa M1-M4 al recibir imagen
+    mock_chat_camion = {
+        "placa": {"texto": "6412TRK", "texto_raw": "6412 TRK", "confianza": 0.91, "bbox": [15, 15, 95, 45]},
+        "vehiculo": {
+            "categoria": "camion",
+            "categoria_nombre": "Camión",
+            "confianza": 0.94,
+            "area_mascara": 0.42,
+            "llantas_visibles": 4,
+            "angulo": "frontal/posterior",
+        },
+        "ejes": 2,
+        "llantas_visibles": 4,
+        "vista": "frontal/posterior",
+        "keypoints": [[80, 210, 0.9], [140, 210, 0.9]],
+        "pasajeros": 1,
+        "latencia_ms": 140.0,
+        "imagen_anotada_b64": "",
+    }
+    with patch("app.agent.inference_client.infer_full", new=AsyncMock(return_value=mock_chat_camion)):
+        r_chat_img = client.post(
+            "/api/v1/agente/chat",
+            headers=headers,
+            files={"file": ("camion_chat.jpg", b"\xff\xd8\xff\xd9", "image/jpeg")},
+        )
+    assert r_chat_img.status_code == 200
+    chat_img_body = r_chat_img.json()
+    assert chat_img_body["estado"] == "Registrada y con paso"
+    assert chat_img_body["inferencia"]["categoria"] == "camion"
+    assert chat_img_body["inferencia"]["llantas_visibles"] == 4
+    assert chat_img_body["inferencia"]["pasajeros"] == 1
+    assert "—" in chat_img_body["inferencia"]["propietario"]
+
     # 3. Identificada no registrada
     r3 = client.post("/api/v1/agente/chat", headers=headers, data={"mensaje": "9999-ZZZ"})
     assert r3.status_code == 200

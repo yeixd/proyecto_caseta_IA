@@ -744,6 +744,9 @@ function MobileConsultaTab({ casetas = [], onRefresh }) {
         fd.append("file", optimized, "placa_movil.jpg");
       }
       const { data } = await api.post("/api/v1/agente/chat", fd);
+      if (data.inferencia) {
+        onRefresh?.();
+      }
       setMessages((prev) => [
         ...prev,
         {
@@ -753,6 +756,7 @@ function MobileConsultaTab({ casetas = [], onRefresh }) {
           placa: data.placa_normalizada,
           sugerencias: data.sugerencias || [],
           datos: data.datos || null,
+          inferencia: data.inferencia || null,
           ocr: data.ocr || null,
           motor: data.motor || null
         }
@@ -826,12 +830,43 @@ function MobileConsultaTab({ casetas = [], onRefresh }) {
                 />
               )}
 
-              {m.evidenceUrl && (
+              {(m.evidenceUrl || m.inferencia?.imagen_url) && (
                 <img
-                  src={m.evidenceUrl}
-                  alt="Evidencia anotada"
-                  className="w-full max-h-48 object-contain rounded-xl border border-emerald-500/40 bg-slate-950"
+                  src={m.evidenceUrl || resolveImageUrl(m.inferencia.imagen_url)}
+                  alt="Inferencia anotada"
+                  className="w-full max-h-52 object-contain rounded-xl border border-emerald-500/40 bg-slate-950"
                 />
+              )}
+
+              {m.inferencia && (
+                <div className="bg-slate-950/95 border border-emerald-500/30 rounded-xl p-2.5 grid grid-cols-2 gap-1.5 text-[11px]">
+                  <div className="col-span-2 flex items-center justify-between border-b border-slate-800 pb-1">
+                    <span className="text-slate-400">Clase (M2)</span>
+                    <span
+                      className={`px-2 py-0.5 rounded-full font-bold border ${
+                        VEHICLE_CLASS_COLORS[m.inferencia.categoria] || VEHICLE_CLASS_COLORS.auto
+                      }`}
+                    >
+                      {formatVehicleClass(m.inferencia.categoria)}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block">Ejes / Llantas (M3)</span>
+                    <strong className="text-white">
+                      {m.inferencia.ejes} ejes ({m.inferencia.llantas_visibles ?? 0} llantas)
+                    </strong>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block">Pasajeros (M4)</span>
+                    <strong className="text-cyan-300">{m.inferencia.pasajeros}</strong>
+                  </div>
+                  <div className="col-span-2 flex items-center justify-between border-t border-slate-800 pt-1">
+                    <span className="text-slate-400">Tarifa cobrada</span>
+                    <strong className="text-emerald-300">
+                      Bs. {Number(m.inferencia.tarifa_bs || 0).toFixed(2)}
+                    </strong>
+                  </div>
+                </div>
               )}
 
               {(m.estado || m.motor || m.ocr?.confianza) && (

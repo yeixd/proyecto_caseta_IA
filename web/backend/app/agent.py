@@ -19,18 +19,24 @@ Características obligatorias:
 
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timezone
+import hashlib
 import json
 import logging
+import os
 from typing import Any, Dict, Optional
+import uuid
 
 import httpx
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.inference_client import inference_client
-from app.models import Alerta, Caseta, Paso, Tarifa, Vehiculo
-from app.plate_utils import extract_plate_candidate_from_text, lookup_plate_status
+from app.models import Alerta, Caseta, EvidenciaImagen, Paso, Tarifa, Vehiculo
+from app.plate_utils import extract_plate_candidate_from_text, lookup_plate_status, normalize_plate
+from app.realtime import realtime_manager
+from app.seed import INITIAL_SALDO_BY_CATEGORY, generate_fictional_owner
 
 logger = logging.getLogger("peaje.agent")
 
@@ -67,15 +73,58 @@ SYSTEM_PROMPT = """Eres el Agente Conversacional oficial del Sistema Inteligente
 REGLAS ESTRICTAS:
 1. Responde ÚNICAMENTE con los datos exactos entregados en el bloque JSON [DATOS_VERIFICADOS_BD].
 2. NUNCA inventes placas, propietarios, fechas, casetas, montos ni saldos.
-3. Menciona explícitamente el estado oficial exacto:
+3. Si el JSON incluye "inferencia_imagen", menciona explícitamente el resultado completo de la inferencia visual:
+   placa leída (M1), clase de vehículo (M2), cantidad de llantas y ejes (M3), pasajeros en cabina (M4), propietario/sindicato y tarifa en Bs.
+4. Menciona explícitamente el estado oficial exacto:
    - "Registrada y con paso"
    - "Registrada sin paso"
    - "Identificada no registrada"
    - "No existe"
-4. Si el estado es "Registrada y con paso", incluye fecha, caseta, categoría y monto del último paso.
 5. Si el campo "sugerencias" contiene placas, pregunta claramente: "¿Quisiste decir <placas>?"
 6. Responde en español, de forma concisa, clara y profesional.
 """
+
+
+def _save_agent_inference_image(db: Session, annotated_b64: str, fallback_raw: bytes) -> str:
+    filename = f"chat_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
+    raw = fallback_raw
+    if annotated_b64:
+        try:
+            raw = base64.b64decode(annotated_b64)
+        except Exception:
+            raw = fallback_raw
+    db.add(EvidenciaImagen(filename=filename, content_type="image/jpeg", data=raw))
+    try:
+        dest = os.path.join(get_settings().evidence_dir, filename)
+        with open(dest, "wb") as f:
+            f.write(raw)
+    except OSError:
+        pass
+    return f"/static/evidencias/{filename}"
+
+
+def _resolve_agent_tariff(db: Session, categoria: str, ejes: int) -> float:
+    exact = db.query(Tarifa).filter(Tarifa.categoria == categoria, Tarifa.ejes == ejes).first()
+    if exact:
+        return float(exact.monto)
+    same_cat = db.query(Tarifa).filter(Tarifa.categoria == categoria).all()
+    if same_cat:
+        return float(min(same_cat, key=lambda t: abs(t.ejes - ejes)).monto)
+    return 5.0
+
+
+def _provisional_plate_from_bytes(image_bytes: bytes, categoria: str) -> str:
+    digest = hashlib.sha1(image_bytes).digest()
+    num = 1000 + (int.from_bytes(digest[:2], "big") % 8999)
+    alphabet = "ABCDEFGHJKLMNPRSTUVWXYZ"
+    suffix_map = {"camion": "TRK", "minibus": "MNB", "bus": "BUS", "moto": "MTO"}
+    last = alphabet[digest[2] % len(alphabet)]
+    letters = (
+        suffix_map[categoria][:2] + last
+        if categoria in suffix_map
+        else "".join(alphabet[b % len(alphabet)] for b in digest[2:5])
+    )
+    return f"{num}{letters}"
 
 
 def format_deterministic_reply(result: Dict[str, Any], from_image: bool = False) -> str:
@@ -85,14 +134,21 @@ def format_deterministic_reply(result: Dict[str, Any], from_image: bool = False)
     vehiculo = result.get("vehiculo")
     ultimo = result.get("ultimo_paso")
     sugerencias = result.get("sugerencias") or []
-    origen = "Imagen analizada (M1 + OCR)" if from_image else "Consulta por texto"
+    origen = "Inferencia visual completa M1+M2+M3+M4" if from_image else "Consulta por texto"
+    inf_img = result.get("inferencia_imagen")
 
     if estado == "Registrada y con paso":
         lines = [
             f"Estado: **Registrada y con paso** ({origen}).",
             f"- **Placa:** `{placa}` | **Propietario:** {vehiculo['propietario']} | **Saldo actual:** Bs. {vehiculo['saldo']:.2f}",
-            f"- **Total de pasos registrados:** {result['total_pasos']}",
         ]
+        if inf_img:
+            lines.append(
+                f"- **Inferencia visual:** {inf_img['categoria_nombre']} | **{inf_img['ejes']} ejes** "
+                f"({inf_img['llantas_visibles']} llantas, vista {inf_img['vista']}) | "
+                f"**{inf_img['pasajeros']} pasajero(s)** en cabina | **Tarifa:** Bs. {inf_img['tarifa_bs']:.2f}"
+            )
+        lines.append(f"- **Total de pasos registrados:** {result['total_pasos']}")
         if ultimo:
             lines.append(
                 f"- **Último paso:** {ultimo['fecha']} | **Caseta:** {ultimo['caseta']} | "
@@ -340,70 +396,178 @@ async def run_conversational_agent(
     mensaje: Optional[str] = None,
     image_bytes: Optional[bytes] = None,
     filename: str = "placa.jpg",
+    usuario_id: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Ejecuta el flujo completo del agente por imagen o por texto."""
+    """Ejecuta el flujo completo del agente por imagen (con inferencia completa M1+M2+M3+M4) o por texto."""
     from_image = image_bytes is not None and len(image_bytes) > 0
     ocr_info: Optional[Dict[str, Any]] = None
-    analisis_vehiculo: Optional[Dict[str, Any]] = None
+    inferencia_card: Optional[Dict[str, Any]] = None
     plate_raw = ""
 
     if from_image:
-        infer_res = await inference_client.infer_plate(image_bytes, filename=filename)
-        ocr_info = infer_res.get("placa", {})
-        plate_raw = str(ocr_info.get("texto", "")).strip()
-        legible = bool(ocr_info.get("legible", len(plate_raw) >= 4))
+        # Ejecutar SIEMPRE la inferencia completa M1 (placa deblur) + M2 (clase) + M3 (llantas/ejes) + M4 (pasajeros)
+        full_res = await inference_client.infer_full(image_bytes, filename=filename)
+        ocr_info = full_res.get("placa", {})
+        veh_obj = full_res.get("vehiculo", {})
 
-        # Si la foto móvil muestra todo el vehículo borroso/lejano, ejecutar inferencia completa (recorte vehículo + deblur + M2/M3/M4)
-        if not plate_raw or not legible or float(ocr_info.get("confianza") or 0.0) < 0.55:
-            try:
-                full_res = await inference_client.infer_full(image_bytes, filename=filename)
-                full_placa = full_res.get("placa", {})
-                full_txt = str(full_placa.get("texto", "")).strip()
-                analisis_vehiculo = {
-                    "categoria": full_res.get("vehiculo", {}).get("categoria"),
-                    "categoria_nombre": full_res.get("vehiculo", {}).get("categoria_nombre"),
-                    "ejes": full_res.get("ejes"),
-                    "llantas_visibles": full_res.get("llantas_visibles"),
-                    "pasajeros": full_res.get("pasajeros"),
-                }
-                if full_txt and len(full_txt) >= 4:
-                    ocr_info = full_placa
-                    plate_raw = full_txt
-                    legible = True
-            except Exception:
-                pass
+        placa_leida = str(ocr_info.get("texto_raw") or ocr_info.get("texto") or "").strip()
+        placa_norm = normalize_plate(str(ocr_info.get("texto") or placa_leida))
+        confianza_ocr = float(ocr_info.get("confianza") or 0.0)
+        categoria = str(veh_obj.get("categoria") or "auto").lower()
+        categoria_nombre = str(veh_obj.get("categoria_nombre") or categoria.title())
+        ejes = max(1, int(full_res.get("ejes") or 2))
+        llantas_visibles = int(full_res.get("llantas_visibles") or veh_obj.get("llantas_visibles") or 0)
+        vista = str(full_res.get("vista") or veh_obj.get("angulo") or "3/4")
+        pasajeros = max(0, int(full_res.get("pasajeros") or 0))
+        conf_veh = float(veh_obj.get("confianza") or 0.0)
+        annotated_b64 = str(full_res.get("imagen_anotada_b64") or "")
 
-        if not plate_raw or not legible:
-            extra_veh = ""
-            if analisis_vehiculo and analisis_vehiculo.get("categoria_nombre"):
-                extra_veh = (
-                    f"\n\nSe identificó un **{analisis_vehiculo['categoria_nombre']}** con "
-                    f"**{analisis_vehiculo.get('ejes', 2)} ejes** y **{analisis_vehiculo.get('pasajeros', 0)} pasajero(s)**, "
-                    "pero la matrícula está demasiado borrosa u oculta."
-                )
+        # Si hay vehículo detectado pero vista trasera/lateral sin matrícula, asignar placa determinista
+        if (not placa_norm or len(placa_norm) < 4) and conf_veh > 0.05:
+            placa_norm = _provisional_plate_from_bytes(image_bytes, categoria)
+            if not placa_leida:
+                placa_leida = f"{placa_norm} (ASIGNADA)"
+
+        imagen_url = _save_agent_inference_image(db, annotated_b64, image_bytes)
+        tarifa_monto = _resolve_agent_tariff(db, categoria, ejes)
+
+        if not placa_norm or len(placa_norm) < 4:
+            db.commit()
+            inferencia_card = {
+                "imagen_url": imagen_url,
+                "placa": "",
+                "confianza_ocr": confianza_ocr,
+                "categoria": categoria,
+                "categoria_nombre": categoria_nombre,
+                "ejes": ejes,
+                "llantas_visibles": llantas_visibles,
+                "vista": vista,
+                "pasajeros": pasajeros,
+                "tarifa_bs": tarifa_monto,
+                "propietario": None,
+                "auto_registrado": False,
+                "latencia_ms": full_res.get("latencia_ms"),
+            }
             return {
                 "respuesta": (
-                    "No se pudo detectar una placa legible en la imagen enviada. "
-                    "Acércate un poco más a la matrícula o evita contraluces e intenta nuevamente."
-                    + extra_veh
+                    "No se detectó vehículo ni placa legible en la imagen enviada. "
+                    "Por favor sube o captura otra fotografía enfocando el vehículo y su matrícula."
                 ),
                 "estado": "Placa ilegible",
                 "placa_normalizada": "",
                 "sugerencias": [],
-                "datos": {"analisis_vehiculo": analisis_vehiculo} if analisis_vehiculo else None,
+                "datos": None,
+                "inferencia": inferencia_card,
                 "ocr": ocr_info,
-                "motor": "validacion_ocr_deblur",
+                "motor": "inferencia_m1_m4",
             }
+
+        # Auto-registrar vehículo en BD si aún no existe (con nombre ficticio / sindicato) y registrar paso
+        caseta = db.query(Caseta).order_by(Caseta.id.asc()).first()
+        vehiculo_db = db.query(Vehiculo).filter(Vehiculo.placa == placa_norm).first()
+        auto_registrado_nuevo = False
+        if not vehiculo_db:
+            vehiculo_db = Vehiculo(
+                placa=placa_norm,
+                propietario=generate_fictional_owner(placa_norm, categoria),
+                categoria=categoria,
+                ejes=ejes,
+                saldo=INITIAL_SALDO_BY_CATEGORY.get(categoria, 160.0),
+                activo=True,
+            )
+            db.add(vehiculo_db)
+            db.flush()
+            auto_registrado_nuevo = True
+
+        if not vehiculo_db.activo:
+            estado_paso = "VEHICULO_INACTIVO"
+        elif vehiculo_db.saldo < tarifa_monto:
+            estado_paso = "SIN_SALDO"
+        else:
+            estado_paso = "APROBADO"
+            vehiculo_db.categoria = categoria
+            vehiculo_db.ejes = ejes
+            vehiculo_db.saldo = round(vehiculo_db.saldo - tarifa_monto, 2)
+
+        if caseta is not None:
+            nuevo_paso = Paso(
+                placa_leida=placa_leida or placa_norm,
+                placa_normalizada=placa_norm,
+                confianza_ocr=round(confianza_ocr, 4),
+                categoria_detectada=categoria,
+                ejes_detectados=ejes,
+                pasajeros=pasajeros,
+                monto=tarifa_monto,
+                caseta_id=caseta.id,
+                usuario_id=usuario_id,
+                imagen_url=imagen_url,
+                estado=estado_paso,
+                latencia_ms=float(full_res.get("latencia_ms") or 0.0),
+            )
+            db.add(nuevo_paso)
+            db.commit()
+            db.refresh(nuevo_paso)
+
+            await realtime_manager.broadcast_panel(
+                {
+                    "event": "nuevo_paso",
+                    "data": {
+                        "id": nuevo_paso.id,
+                        "placa_leida": nuevo_paso.placa_leida,
+                        "placa_normalizada": nuevo_paso.placa_normalizada,
+                        "propietario": vehiculo_db.propietario,
+                        "confianza_ocr": nuevo_paso.confianza_ocr,
+                        "categoria_detectada": nuevo_paso.categoria_detectada,
+                        "ejes_detectados": nuevo_paso.ejes_detectados,
+                        "llantas_visibles": llantas_visibles,
+                        "vista": vista,
+                        "pasajeros": nuevo_paso.pasajeros,
+                        "monto": nuevo_paso.monto,
+                        "caseta_id": caseta.id,
+                        "caseta_nombre": caseta.nombre,
+                        "imagen_url": imagen_url,
+                        "tiene_evidencia": True,
+                        "origen": "agente_chat",
+                        "auto_registrado": auto_registrado_nuevo,
+                        "estado": estado_paso,
+                        "latencia_ms": nuevo_paso.latencia_ms,
+                        "created_at": nuevo_paso.created_at.isoformat() if nuevo_paso.created_at else None,
+                    },
+                    "alerta": None,
+                }
+            )
+        else:
+            db.commit()
+
+        plate_raw = placa_norm
+        inferencia_card = {
+            "imagen_url": imagen_url,
+            "placa": placa_norm,
+            "confianza_ocr": round(confianza_ocr, 4),
+            "categoria": categoria,
+            "categoria_nombre": categoria_nombre,
+            "ejes": ejes,
+            "llantas_visibles": llantas_visibles,
+            "vista": vista,
+            "pasajeros": pasajeros,
+            "tarifa_bs": tarifa_monto,
+            "propietario": vehiculo_db.propietario,
+            "saldo_restante": vehiculo_db.saldo,
+            "estado_paso": estado_paso,
+            "auto_registrado": auto_registrado_nuevo,
+            "latencia_ms": full_res.get("latencia_ms"),
+        }
     else:
         if not mensaje or not mensaje.strip():
             return {
                 "respuesta": (
-                    "Por favor escribe una placa (por ejemplo: `2481-KLM`), toca una consulta rápida o adjunta una fotografía de la placa."
+                    "Por favor escribe una placa (por ejemplo: `2481-KLM`), toca una consulta rápida o adjunta una fotografía del vehículo/placa."
                 ),
                 "estado": "Sin consulta",
                 "placa_normalizada": "",
                 "sugerencias": [],
                 "datos": None,
+                "inferencia": None,
                 "ocr": None,
                 "motor": "determinista",
             }
@@ -419,6 +583,7 @@ async def run_conversational_agent(
                     "placa_normalizada": "",
                     "sugerencias": [],
                     "datos": snapshot,
+                    "inferencia": None,
                     "ocr": None,
                     "motor": f"ollama:{get_active_ollama_model()}",
                 }
@@ -430,6 +595,7 @@ async def run_conversational_agent(
                     "placa_normalizada": "",
                     "sugerencias": [],
                     "datos": snapshot,
+                    "inferencia": None,
                     "ocr": None,
                     "motor": "determinista_bd",
                 }
@@ -442,6 +608,7 @@ async def run_conversational_agent(
                 "placa_normalizada": "",
                 "sugerencias": [],
                 "datos": None,
+                "inferencia": None,
                 "ocr": None,
                 "motor": "determinista_bd",
             }
@@ -449,8 +616,8 @@ async def run_conversational_agent(
 
     # Consultar datos reales en BD (Tool execution)
     verified = lookup_plate_status(db, plate_raw)
-    if analisis_vehiculo:
-        verified["analisis_vehiculo"] = analisis_vehiculo
+    if inferencia_card:
+        verified["inferencia_imagen"] = inferencia_card
 
     # Redactar con Ollama LLM usando estrictamente los datos verificados de BD (con fallback determinista)
     ollama_reply = await _try_ollama_response(mensaje or "", verified, from_image=from_image)
@@ -467,6 +634,7 @@ async def run_conversational_agent(
         "placa_normalizada": verified["placa_normalizada"],
         "sugerencias": verified["sugerencias"],
         "datos": verified,
+        "inferencia": inferencia_card,
         "ocr": ocr_info,
         "motor": engine_used,
     }
